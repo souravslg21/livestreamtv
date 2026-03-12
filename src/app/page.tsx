@@ -1,31 +1,30 @@
-import YouTubePlayer from "@/components/player/YouTubePlayer";
+import HLSPlayer from "@/components/player/HLSPlayer";
 import { Tv, Radio, MonitorPlay, Zap } from "lucide-react";
 
 export default function Home() {
   return (
-    <main className="min-height-screen flex flex-col items-center justify-center p-6 md:p-24 relative overflow-hidden">
+    <main className="min-h-screen flex flex-col items-center justify-center p-6 md:p-24 relative overflow-hidden bg-slate-950">
       {/* Abstract Background Orbs */}
       <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/10 blur-[120px] rounded-full" />
 
       <div className="z-10 w-full max-w-5xl flex flex-col items-center gap-12">
         <header className="flex flex-col items-center gap-4 text-center">
-          <div className="flex items-center gap-2 px-4 py-2 rounded-full glass animate-fade-in">
+          <div className="flex items-center gap-2 px-4 py-2 rounded-full border border-white/5 bg-white/5 animate-fade-in">
             <Zap className="w-4 h-4 text-yellow-400 fill-yellow-400" />
             <span className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Ultra Low Latency Stream</span>
           </div>
           
-          <h1 className="text-5xl md:text-7xl font-outfit font-black tracking-tight text-gradient">
-            SRV CREATION TV
+          <h1 className="text-5xl md:text-7xl font-outfit font-black tracking-tight text-white">
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">SRV CREATION TV</span>
           </h1>
           <p className="max-w-2xl text-slate-400 font-medium md:text-lg leading-relaxed">
-            Your premium 24/7 digital broadcasting experience. Seamlessly curated, continuously streaming.
+            Your premium 24/7 digital broadcasting experience. Seamlessly curated, continuously streaming in 1080p.
           </p>
         </header>
 
-        <div className="w-full relative group">
-          <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-purple-600 rounded-3xl blur opacity-25 group-hover:opacity-40 transition duration-1000 group-hover:duration-200"></div>
-          <YouTubePlayer />
+        <div className="w-full relative group p-1 rounded-[2.2rem] bg-gradient-to-b from-white/10 to-transparent">
+          <HLSPlayer />
         </div>
 
         <section className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full">
