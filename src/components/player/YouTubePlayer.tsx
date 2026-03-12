@@ -113,17 +113,29 @@ export default function Player() {
 
   return (
     <div className="w-full aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/10 relative group">
-      {/* Hide YouTube Branding Masks */}
-      <div className="absolute top-0 left-0 w-full h-12 bg-black/60 z-10 pointer-events-none" />
-      <div className="absolute bottom-0 right-0 w-40 h-20 bg-black/60 z-10 pointer-events-none" />
+      {/* 
+        Interaction Guard & Scale Crop Logic:
+        1. Scale the player by 1.15x to push corner branding outside the bounds.
+        2. Use a transparent overlay (z-20) to block YouTube's hover UI.
+      */}
+      <div 
+        ref={containerRef} 
+        className="w-full h-full scale-[1.12]" 
+      />
       
-      <div ref={containerRef} className="w-full h-full scale-[1.01]" />
-      <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none z-20">
-        <div className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded tracking-wider flex items-center gap-1 shadow-lg">
+      {/* Interaction block - prevents YouTube UI from showing on hover/click */}
+      <div className="absolute inset-0 z-20 pointer-events-auto cursor-default" onClick={toggleMute} />
+
+      {/* Aesthetic Masks to catch any stray border elements */}
+      <div className="absolute top-0 left-0 w-full h-16 bg-gradient-to-b from-black/80 to-transparent z-10 pointer-events-none" />
+      <div className="absolute bottom-0 left-0 w-full h-16 bg-gradient-to-t from-black/80 to-transparent z-10 pointer-events-none" />
+      
+      <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none z-30">
+        <div className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded tracking-wider flex items-center gap-1 shadow-lg border border-white/10">
           <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
           {playlist[currentVideoIndex]?.is_live ? 'LIVE NOW' : 'BROADCASTING'}
         </div>
-        <div className="bg-black/60 backdrop-blur-md text-white text-[10px] font-medium px-2 py-0.5 rounded border border-white/10 uppercase tracking-tight shadow-lg">
+        <div className="bg-black/60 backdrop-blur-md text-white text-[10px] font-medium px-2 py-0.5 rounded border border-white/10 uppercase tracking-tight shadow-md">
           {playlist[currentVideoIndex]?.title || 'Loading...'}
         </div>
       </div>
@@ -131,7 +143,7 @@ export default function Player() {
       {isMuted && (
         <button 
           onClick={toggleMute}
-          className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors z-20"
+          className="absolute inset-0 flex items-center justify-center bg-black/40 group-hover:bg-black/60 transition-colors z-[40]"
         >
           <div className="bg-white/10 backdrop-blur-xl border border-white/20 px-6 py-3 rounded-2xl flex items-center gap-3 animate-bounce shadow-2xl">
             <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
