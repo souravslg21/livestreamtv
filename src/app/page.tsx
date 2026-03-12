@@ -1,4 +1,4 @@
-import HLSPlayer from "@/components/player/HLSPlayer";
+import YouTubePlayer from "@/components/player/YouTubePlayer";
 import { Tv, Radio, MonitorPlay, Zap } from "lucide-react";
 
 export default function Home() {
@@ -19,12 +19,12 @@ export default function Home() {
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">SRV CREATION TV</span>
           </h1>
           <p className="max-w-2xl text-slate-400 font-medium md:text-lg leading-relaxed">
-            Your premium 24/7 digital broadcasting experience. Seamlessly curated, continuously streaming in 1080p.
+            Your premium 24/7 digital broadcasting experience. Seamlessly curated, continuously streaming from YouTube.
           </p>
         </header>
 
         <div className="w-full relative group p-1 rounded-[2.2rem] bg-gradient-to-b from-white/10 to-transparent">
-          <HLSPlayer />
+          <YouTubePlayer />
         </div>
 
         <section className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full">
