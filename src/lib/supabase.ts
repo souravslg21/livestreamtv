@@ -22,6 +22,7 @@ export interface VideoItem {
   title: string;
   duration: number; // in seconds
   order: number;
+  is_live?: boolean;
 }
 
 // Mock data for initial development if Supabase is not configured

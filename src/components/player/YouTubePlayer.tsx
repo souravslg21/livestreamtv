@@ -60,7 +60,7 @@ export default function Player() {
       <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
         <div className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded tracking-wider flex items-center gap-1">
           <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
-          LIVE
+          {playlist[currentVideoIndex]?.is_live ? 'LIVE NOW' : 'BROADCASTING'}
         </div>
         <div className="bg-black/60 backdrop-blur-md text-white text-[10px] font-medium px-2 py-0.5 rounded border border-white/10 uppercase tracking-tight">
           {playlist[currentVideoIndex]?.title || 'Loading...'}

@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Plus, Trash2, GripVertical, Save, Trash } from 'lucide-react';
+import { Plus, Trash2, GripVertical, Save, Trash, Zap } from 'lucide-react';
 import { VideoItem, mockPlaylist } from '@/lib/supabase';
 
 export default function AdminPanel() {
   const [playlist, setPlaylist] = useState<VideoItem[]>(mockPlaylist);
   const [newUrl, setNewUrl] = useState('');
   const [title, setTitle] = useState('');
+  const [isLive, setIsLive] = useState(false);
 
   const addVideo = () => {
     if (!newUrl) return;
@@ -27,15 +28,23 @@ export default function AdminPanel() {
       title: title || `Video ${playlist.length + 1}`,
       duration: 0,
       order: playlist.length,
+      is_live: isLive,
     };
 
     setPlaylist([...playlist, newItem]);
     setNewUrl('');
     setTitle('');
+    setIsLive(false);
   };
 
   const removeVideo = (id: string) => {
     setPlaylist(playlist.filter(item => item.id !== id));
+  };
+
+  const toggleLive = (id: string) => {
+    setPlaylist(playlist.map(item => 
+      item.id === id ? { ...item, is_live: !item.is_live } : item
+    ));
   };
 
   return (
@@ -62,6 +71,24 @@ export default function AdminPanel() {
             className="bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500 transition-colors"
           />
         </div>
+        
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 cursor-pointer group">
+            <div className={`w-10 h-6 rounded-full transition-colors relative ${isLive ? 'bg-red-600' : 'bg-slate-700'}`}>
+              <input 
+                type="checkbox" 
+                className="sr-only" 
+                checked={isLive}
+                onChange={(e) => setIsLive(e.target.checked)}
+              />
+              <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${isLive ? 'translate-x-4' : ''}`} />
+            </div>
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400 group-hover:text-slate-200 transition-colors">
+              Treat as Live Stream
+            </span>
+          </label>
+        </div>
+
         <button 
           onClick={addVideo}
           className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95"
@@ -81,16 +108,32 @@ export default function AdminPanel() {
                 className="w-12 h-9 rounded object-cover"
               />
               <div className="flex flex-col">
-                <span className="text-sm font-semibold text-slate-200 line-clamp-1">{video.title}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-slate-200 line-clamp-1">{video.title}</span>
+                  {video.is_live && (
+                    <span className="bg-red-600/20 text-red-500 text-[8px] font-black px-1.5 py-0.5 rounded border border-red-500/30 uppercase tracking-tighter">
+                      LIVE
+                    </span>
+                  )}
+                </div>
                 <span className="text-[10px] text-slate-500 font-mono tracking-tighter uppercase">{video.youtube_id}</span>
               </div>
             </div>
-            <button 
-              onClick={() => removeVideo(video.id)}
-              className="p-2 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => toggleLive(video.id)}
+                className={`p-2 rounded-lg transition-colors ${video.is_live ? 'text-red-500' : 'text-slate-600 hover:text-slate-400'}`}
+                title={video.is_live ? "Mark as Video" : "Mark as Live"}
+              >
+                <Zap className={`w-4 h-4 ${video.is_live ? 'fill-red-500' : ''}`} />
+              </button>
+              <button 
+                onClick={() => removeVideo(video.id)}
+                className="p-2 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         ))}
       </div>
