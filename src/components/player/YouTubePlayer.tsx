@@ -86,16 +86,12 @@ export default function Player() {
     }
   }, [playlist]);
 
-  // Handle manual tab switching or video ending
   useEffect(() => {
     if (playerRef.current && playlist.length > 0) {
-        const video = playlist[currentVideoIndex];
-        // Only load if it's different from what's currently playing to avoid loops
-        playerRef.current.getVideoData().then((data: any) => {
-            if (data.video_id !== video.youtube_id) {
-                playerRef.current.loadVideoById(video.youtube_id);
-            }
-        });
+      const video = playlist[currentVideoIndex];
+      // Simply load the video. Since we track currentVideoIndex, 
+      // we don't need to manually check the internal player state with getVideoData
+      playerRef.current.loadVideoById(video.youtube_id);
     }
   }, [currentVideoIndex]);
 
