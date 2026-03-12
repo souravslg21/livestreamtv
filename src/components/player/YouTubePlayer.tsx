@@ -47,9 +47,11 @@ export default function Player() {
     playerRef.current = YouTubePlayer(containerRef.current, {
       playerVars: {
         autoplay: 1,
-        controls: 1,
+        controls: 0,
         modestbranding: 1,
         rel: 0,
+        iv_load_policy: 3,
+        disablekb: 1,
       },
     });
 
@@ -72,13 +74,10 @@ export default function Player() {
       const { index, startSeconds } = getSyncInfo(playlist);
       const video = playlist[index];
       
-      playerRef.current.loadVideoById({
-        videoId: video.youtube_id,
-        startSeconds: startSeconds
-      });
+      // Load and seek directly
+      playerRef.current.loadVideoById(video.youtube_id, startSeconds);
       
       playerRef.current.playVideo();
-      // Ensure it stays muted for autoplay
       playerRef.current.mute();
       
       if (index !== currentVideoIndex) {
@@ -118,13 +117,17 @@ export default function Player() {
 
   return (
     <div className="w-full aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/10 relative group">
-      <div ref={containerRef} className="w-full h-full" />
-      <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
-        <div className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded tracking-wider flex items-center gap-1">
+      {/* Hide YouTube Branding Masks */}
+      <div className="absolute top-0 left-0 w-full h-12 bg-black/60 z-10 pointer-events-none" />
+      <div className="absolute bottom-0 right-0 w-40 h-20 bg-black/60 z-10 pointer-events-none" />
+      
+      <div ref={containerRef} className="w-full h-full scale-[1.01]" />
+      <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none z-20">
+        <div className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded tracking-wider flex items-center gap-1 shadow-lg">
           <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
           {playlist[currentVideoIndex]?.is_live ? 'LIVE NOW' : 'BROADCASTING'}
         </div>
-        <div className="bg-black/60 backdrop-blur-md text-white text-[10px] font-medium px-2 py-0.5 rounded border border-white/10 uppercase tracking-tight">
+        <div className="bg-black/60 backdrop-blur-md text-white text-[10px] font-medium px-2 py-0.5 rounded border border-white/10 uppercase tracking-tight shadow-lg">
           {playlist[currentVideoIndex]?.title || 'Loading...'}
         </div>
       </div>
