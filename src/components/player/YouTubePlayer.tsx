@@ -11,17 +11,34 @@ export default function Player() {
   const [isMuted, setIsMuted] = useState(true);
   const playerRef = useRef<any>(null);
 
+  const getSyncInfo = (items: VideoItem[]) => {
+    if (items.length === 0) return { index: 0, startSeconds: 0 };
+    
+    // Calculate total duration, assuming 5 mins (300s) for items with 0 duration
+    const totalDuration = items.reduce((acc, item) => acc + (item.duration || 300), 0);
+    const now = Math.floor(Date.now() / 1000);
+    const epoch = 1735689600; // Jan 1, 2025 00:00:00 UTC
+    const elapsed = (now - epoch) % totalDuration;
+
+    let cumulative = 0;
+    for (let i = 0; i < items.length; i++) {
+      const itemDuration = items[i].duration || 300;
+      if (elapsed < cumulative + itemDuration) {
+        return { index: i, startSeconds: Math.floor(elapsed - cumulative) };
+      }
+      cumulative += itemDuration;
+    }
+    return { index: 0, startSeconds: 0 };
+  };
+
   useEffect(() => {
     // If supabase is available, we could fetch real data here
     if (supabase) {
       // Future implementation: fetch from supabase
     }
 
-    // Find the first live video to start with
-    const liveIndex = playlist.findIndex(item => item.is_live);
-    if (liveIndex !== -1) {
-      setCurrentVideoIndex(liveIndex);
-    }
+    const { index } = getSyncInfo(playlist);
+    setCurrentVideoIndex(index);
   }, []);
 
   useEffect(() => {
@@ -52,13 +69,36 @@ export default function Player() {
 
   useEffect(() => {
     if (playerRef.current && playlist.length > 0) {
-      const video = playlist[currentVideoIndex];
-      playerRef.current.loadVideoById(video.youtube_id);
+      const { index, startSeconds } = getSyncInfo(playlist);
+      const video = playlist[index];
+      
+      playerRef.current.loadVideoById({
+        videoId: video.youtube_id,
+        startSeconds: startSeconds
+      });
+      
       playerRef.current.playVideo();
       // Ensure it stays muted for autoplay
       playerRef.current.mute();
+      
+      if (index !== currentVideoIndex) {
+        setCurrentVideoIndex(index);
+      }
     }
-  }, [currentVideoIndex, playlist]);
+  }, [playlist]);
+
+  // Handle manual tab switching or video ending
+  useEffect(() => {
+    if (playerRef.current && playlist.length > 0) {
+        const video = playlist[currentVideoIndex];
+        // Only load if it's different from what's currently playing to avoid loops
+        playerRef.current.getVideoData().then((data: any) => {
+            if (data.video_id !== video.youtube_id) {
+                playerRef.current.loadVideoById(video.youtube_id);
+            }
+        });
+    }
+  }, [currentVideoIndex]);
 
   const handleVideoEnd = () => {
     setCurrentVideoIndex((prev) => (prev + 1) % playlist.length);
