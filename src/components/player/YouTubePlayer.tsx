@@ -8,12 +8,19 @@ export default function Player() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
   const [playlist, setPlaylist] = useState<VideoItem[]>(mockPlaylist);
+  const [isMuted, setIsMuted] = useState(true);
   const playerRef = useRef<any>(null);
 
   useEffect(() => {
     // If supabase is available, we could fetch real data here
     if (supabase) {
       // Future implementation: fetch from supabase
+    }
+
+    // Find the first live video to start with
+    const liveIndex = playlist.findIndex(item => item.is_live);
+    if (liveIndex !== -1) {
+      setCurrentVideoIndex(liveIndex);
     }
   }, []);
 
@@ -47,11 +54,26 @@ export default function Player() {
     if (playerRef.current && playlist.length > 0) {
       const video = playlist[currentVideoIndex];
       playerRef.current.loadVideoById(video.youtube_id);
+      playerRef.current.playVideo();
+      // Ensure it stays muted for autoplay
+      playerRef.current.mute();
     }
   }, [currentVideoIndex, playlist]);
 
   const handleVideoEnd = () => {
     setCurrentVideoIndex((prev) => (prev + 1) % playlist.length);
+  };
+
+  const toggleMute = () => {
+    if (playerRef.current) {
+      if (isMuted) {
+        playerRef.current.unMute();
+        setIsMuted(false);
+      } else {
+        playerRef.current.mute();
+        setIsMuted(true);
+      }
+    }
   };
 
   return (
@@ -66,6 +88,20 @@ export default function Player() {
           {playlist[currentVideoIndex]?.title || 'Loading...'}
         </div>
       </div>
+
+      {isMuted && (
+        <button 
+          onClick={toggleMute}
+          className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors z-20"
+        >
+          <div className="bg-white/10 backdrop-blur-xl border border-white/20 px-6 py-3 rounded-2xl flex items-center gap-3 animate-bounce shadow-2xl">
+            <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
+              <div className="w-4 h-4 bg-white rounded-full animate-ping" />
+            </div>
+            <span className="text-white font-bold text-sm uppercase tracking-widest">Click to Unmute</span>
+          </div>
+        </button>
+      )}
     </div>
   );
 }
