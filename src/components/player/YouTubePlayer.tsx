@@ -11,11 +11,10 @@ export default function Player() {
   const [isLoading, setIsLoading] = useState(true);
   const playerRef = useRef<any>(null);
   const syncLockRef = useRef(false);
-  const watchdogRef = useRef<NodeJS.Timeout | null>(null);
-  const lastTimeRef = useRef(0);
   const stuckCounterRef = useRef(0);
+  const lastTimeRef = useRef(0);
 
-  // Load playlist on mount
+  // Fetch playlist
   useEffect(() => {
     const fetchPlaylist = async () => {
       try {
@@ -70,6 +69,7 @@ export default function Player() {
 
       if (loadedVideoId !== videoId || forceLoad) {
         setCurrentVideoIndex(index);
+        // Using direct load to bypass any internal cues
         await playerRef.current.loadVideoById(videoId, startSeconds);
         await playerRef.current.playVideo().catch(() => {});
         await playerRef.current.unMute().catch(() => {});
@@ -77,12 +77,6 @@ export default function Player() {
         const state = await playerRef.current.getPlayerState();
         if (state === 1) { // Playing
           const currentTime = await playerRef.current.getCurrentTime();
-          // Reset stuck counter if time is moving
-          if (Math.abs(currentTime - lastTimeRef.current) > 0.5) {
-            stuckCounterRef.current = 0;
-            lastTimeRef.current = currentTime;
-          }
-
           if (Math.abs(currentTime - startSeconds) > 10) {
              await playerRef.current.seekTo(startSeconds, true);
           }
@@ -97,7 +91,7 @@ export default function Player() {
     }
   };
 
-  // Watchdog loop: runs every 5 seconds to ensure we aren't stuck on an error screen
+  // Watchdog: detect stuck state or error screen
   useEffect(() => {
     const watchdog = setInterval(async () => {
       if (!playerRef.current) return;
@@ -106,22 +100,22 @@ export default function Player() {
         const state = await playerRef.current.getPlayerState();
         const currentTime = await playerRef.current.getCurrentTime();
         
-        // If state is not playing, or time hasn't moved, increment stuck counter
-        if (state !== 1 || Math.abs(currentTime - lastTimeRef.current) < 0.1) {
+        // If state is unstarted (-1), paused (2), cued (5) or ended (0) for too long
+        if (state !== 1 || Math.abs(currentTime - lastTimeRef.current) < 0.05) {
           stuckCounterRef.current += 1;
         } else {
           stuckCounterRef.current = 0;
           lastTimeRef.current = currentTime;
         }
 
-        // If stuck for more than 15 seconds (3 checks), force a payload reload
-        if (stuckCounterRef.current >= 3) {
-          console.warn('Playback watchdog: detected stuck state. Forcing re-sync...');
-          stuckCounterRef.current = 0;
-          synchronize(true);
+        // If stuck for 20 seconds (4 checks), force a hard page reload
+        // This is the cleanest way to clear YouTube's internal error states
+        if (stuckCounterRef.current >= 4) {
+          console.error('Watchdog: Player appears stuck. Performing hard recovery...');
+          window.location.reload();
         }
       } catch (e) {
-        // Ignore errors during watchdog if player is transitioning
+        // Silently handle if player is destroyed mid-check
       }
     }, 5000);
 
@@ -141,38 +135,45 @@ export default function Player() {
         iv_load_policy: 3,
         disablekb: 1,
         enablejsapi: 1,
-        origin: window.location.origin
+        // Using a proxy-safe origin
+        origin: typeof window !== 'undefined' ? window.location.origin : undefined
       },
     });
 
     playerRef.current = player;
 
     player.on('stateChange', (event: any) => {
-      if (event.data === 0) { // Ended
+      if (event.data === 0) { // Video ended
         synchronize(true);
       }
     });
 
-    // Re-attempt unmute on first click anywhere
-    const unmuteAll = () => {
+    player.on('error', (event: any) => {
+      console.error('YouTube Player Error Code:', event.data);
+      // Skip ahead or reload on error
+      setTimeout(() => synchronize(true), 2000);
+    });
+
+    // Global interaction unmuter
+    const handleInteraction = () => {
       if (playerRef.current) {
         playerRef.current.unMute().catch(() => {});
         playerRef.current.playVideo().catch(() => {});
       }
-      window.removeEventListener('mousedown', unmuteAll);
+      window.removeEventListener('mousedown', handleInteraction);
     };
-    window.addEventListener('mousedown', unmuteAll);
+    window.addEventListener('mousedown', handleInteraction);
 
     return () => {
       if (playerRef.current) {
         playerRef.current.destroy();
         playerRef.current = null;
       }
-      window.removeEventListener('mousedown', unmuteAll);
+      window.removeEventListener('mousedown', handleInteraction);
     };
   }, []);
 
-  // Sync on playlist load
+  // Sync when playlist is updated
   useEffect(() => {
     if (playerRef.current && playlist.length > 0) {
       setTimeout(() => synchronize(true), 1000);
@@ -182,29 +183,39 @@ export default function Player() {
   return (
     <main className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex items-center justify-center">
       {/* 
-        The "Ultimate Crop" Layout:
-        We make the player vastly larger than the viewport (150%) 
-        and use relative positioning to ensure the center of the video is shown.
-        This effectively hides all YouTube overlays, titles, and error messages 
-        which are usually positioned at the edges/corners.
+        The "Hard Crop" Style:
+        Targeting the inner iframe directly with CSS to ensure it SPILLS outside our container.
+        This hides all YouTube UI, titles, watermarks, and error messages.
       */}
+      <style>{`
+        #yt-player-container iframe {
+          width: 200vw !important;
+          height: 200vh !important;
+          position: absolute !important;
+          top: 50% !important;
+          left: 50% !important;
+          transform: translate(-50%, -50%) !important;
+          pointer-events: none !important;
+        }
+      `}</style>
+
       <div className="relative w-full h-full overflow-hidden flex items-center justify-center">
         <div 
+          id="yt-player-container"
           ref={containerRef} 
-          className="w-[160vw] h-[160vh] min-w-[160vh] min-h-[160vw] pointer-events-none"
-          style={{ transform: 'scale(1.2)' }}
+          className="w-full h-full pointer-events-none"
         />
         
-        {/* Interaction blocker - invisible but blocks YouTube's internal controls */}
+        {/* Completely block interaction so YouTube can't show hover UI */}
         <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" />
         
-        {/* Safe Area Edge Protectors (Black Bars to catch any bleeding UI) */}
+        {/* Massive perimeter mask to catch any stray UI or error text */}
         <div className="absolute inset-0 pointer-events-none z-30 ring-[15vw] ring-black" />
       </div>
 
       {isLoading && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black">
-          <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
     </main>
