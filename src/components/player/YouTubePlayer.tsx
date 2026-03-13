@@ -207,16 +207,16 @@ export default function Player() {
   return (
     <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex items-center justify-center">
       {/* 
-        Strategic Scale (150%):
-        Zoomed in to hide watermarks AND any "Playback disabled" subtext 
-        that usually appears at the very bottom or top of the overlay.
+        Strategic Scale (1.1):
+        Zoomed in just enough to hide watermarks while preserving 
+        the maximum possible video area.
       */}
-      <div className="relative w-full h-full overflow-hidden flex items-center justify-center scale-[1.5]">
+      <div className="relative w-full h-full overflow-hidden flex items-center justify-center scale-[1.1]">
         <div ref={containerRef} className="w-full h-full pointer-events-none" />
       </div>
 
       <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" />
-      <div className="absolute inset-0 pointer-events-none z-30 ring-[15vw] ring-black" />
+      <div className="absolute inset-0 pointer-events-none z-30 ring-[5vw] ring-black/20" />
 
       {/* Broadcasting Badge */}
       <div className="absolute top-8 left-8 z-40">
