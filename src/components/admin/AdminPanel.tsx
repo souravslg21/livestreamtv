@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Plus, Trash2, GripVertical, Save, Trash, Zap } from 'lucide-react';
+import { Plus, Trash2, GripVertical, Save, Trash, Zap, RefreshCw } from 'lucide-react';
 import { VideoItem, mockPlaylist } from '@/lib/supabase';
 
 export default function AdminPanel() {
@@ -59,10 +59,51 @@ export default function AdminPanel() {
       setIsLive(false);
     } catch (error) {
       console.error('Failed to get video info:', error);
-      alert('Failed to get video information. Please try again.');
+      // Still add but with generic name if fetch fails
+      const newItem: VideoItem = {
+        id: Math.random().toString(36).substr(2, 9),
+        youtube_id: videoId,
+        title: title || `Video ${playlist.length + 1}`,
+        duration: 0,
+        order: playlist.length,
+        is_live: isLive,
+      };
+      setPlaylist([...playlist, newItem]);
+      setNewUrl('');
+      setTitle('');
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const refreshTitles = async () => {
+    setIsSaving(true);
+    const updatedPlaylist = [...playlist];
+    
+    for (let i = 0; i < updatedPlaylist.length; i++) {
+      const video = updatedPlaylist[i];
+      // Only refresh if generic or empty
+      if (video.title.startsWith('Video ') || !video.title) {
+        try {
+          const res = await fetch(`/api/video/info?v=${video.youtube_id}`);
+          if (res.ok) {
+            const info = await res.json();
+            if (info.title) {
+              updatedPlaylist[i] = { 
+                ...video, 
+                title: info.title,
+                duration: info.duration || video.duration 
+              };
+            }
+          }
+        } catch (e) {
+          console.error(`Failed to refresh title for ${video.youtube_id}`, e);
+        }
+      }
+    }
+    
+    setPlaylist(updatedPlaylist);
+    setIsSaving(false);
   };
 
   const handleSave = async () => {
@@ -86,6 +127,12 @@ export default function AdminPanel() {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const updateTitle = (id: string, newTitle: string) => {
+    setPlaylist(playlist.map(item => 
+      item.id === id ? { ...item, title: newTitle } : item
+    ));
   };
 
   const removeVideo = (id: string) => {
@@ -162,18 +209,23 @@ export default function AdminPanel() {
       <div className="flex flex-col gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
         {playlist.map((video, index) => (
           <div key={video.id} className="bg-white/5 border border-white/5 rounded-xl p-4 flex items-center justify-between group hover:bg-white/10 transition-all">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 flex-1">
               <span className="text-[10px] font-bold text-slate-600 w-4">{index + 1}</span>
               <img 
                 src={`https://img.youtube.com/vi/${video.youtube_id}/default.jpg`} 
                 alt={video.title} 
                 className="w-12 h-9 rounded object-cover shadow-lg"
               />
-              <div className="flex flex-col">
+              <div className="flex flex-col flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-slate-200 line-clamp-1">{video.title}</span>
+                  <input 
+                    type="text"
+                    value={video.title}
+                    onChange={(e) => updateTitle(video.id, e.target.value)}
+                    className="bg-transparent border-none text-sm font-semibold text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500/30 rounded px-1 -ml-1 w-full"
+                  />
                   {video.is_live && (
-                    <span className="bg-red-600/20 text-red-500 text-[8px] font-black px-1.5 py-0.5 rounded border border-red-500/30 uppercase tracking-tighter">
+                    <span className="bg-red-600/20 text-red-500 text-[8px] font-black px-1.5 py-0.5 rounded border border-red-500/30 uppercase tracking-tighter shrink-0">
                       LIVE
                     </span>
                   )}
@@ -204,14 +256,27 @@ export default function AdminPanel() {
         ))}
       </div>
 
-      <div className="pt-4 border-t border-white/5 flex justify-between items-center">
-        <p className="text-[10px] text-slate-600 uppercase tracking-widest font-black">
-          {playlist.length} Segments Buffered
-        </p>
+      <div className="pt-4 border-t border-white/5 flex flex-col gap-4">
+        <div className="flex justify-between items-center">
+          <p className="text-[10px] text-slate-600 uppercase tracking-widest font-black">
+            {playlist.length} Segments Buffered
+          </p>
+          <div className="flex gap-2">
+            <button 
+              onClick={refreshTitles}
+              disabled={isSaving}
+              className="text-slate-500 hover:text-slate-300 text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded-lg flex items-center gap-2 transition-all border border-white/5"
+            >
+              <RefreshCw className={`w-3 h-3 ${isSaving ? 'animate-spin' : ''}`} />
+              Refresh Original Names
+            </button>
+          </div>
+        </div>
+        
         <button 
           onClick={handleSave}
           disabled={isSaving}
-          className="bg-white/10 hover:bg-white/20 text-blue-400  text-[11px] font-black uppercase tracking-widest px-6 py-3 rounded-xl flex items-center gap-2 transition-all active:scale-95 border border-blue-500/20 shadow-xl shadow-blue-500/5 group"
+          className="bg-white/10 hover:bg-white/20 text-blue-400 text-[11px] font-black uppercase tracking-widest w-full py-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 border border-blue-500/20 shadow-xl shadow-blue-500/5 group"
         >
           {isSaving ? (
             <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
