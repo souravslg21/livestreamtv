@@ -11,8 +11,9 @@ export default function Player() {
   const [isLoading, setIsLoading] = useState(true);
   const playerRef = useRef<any>(null);
   const syncLockRef = useRef(false);
+  const errorCountRef = useRef(0);
 
-  // Attempt to unmute and play on interaction
+  // Attempt to unmute and play on interaction (browser policy fallback)
   useEffect(() => {
     const handleFirstInteraction = () => {
       if (playerRef.current) {
@@ -59,13 +60,13 @@ export default function Player() {
     const now = Math.floor(Date.now() / 1000);
     const epoch = 1735689600; // Jan 1, 2025 00:00:00 UTC
     
+    // The modulo handles the infinite loop
     const elapsed = (now - epoch) % totalDuration;
 
     let cumulative = 0;
     for (let i = 0; i < items.length; i++) {
       const itemDuration = items[i].duration || 300;
       if (elapsed < cumulative + itemDuration) {
-        // Ensure startSeconds is not exactly at the end to prevent immediate loop issues
         const start = Math.max(0, Math.floor(elapsed - cumulative));
         return { 
           index: i, 
@@ -89,32 +90,26 @@ export default function Player() {
       const videoData = await playerRef.current.getVideoData();
       const loadedVideoId = videoData?.video_id;
 
-      // Force load if the video ID doesn't match or if specifically requested
       if (loadedVideoId !== videoId || forceLoad) {
         setCurrentVideoIndex(index);
-        // loadVideoById throws if it fails to start
-        await playerRef.current.loadVideoById({
-          videoId: videoId,
-          startSeconds: startSeconds,
-        });
-        await playerRef.current.playVideo();
+        // Using separate arguments for better compatibility with the wrapper
+        await playerRef.current.loadVideoById(videoId, startSeconds);
+        await playerRef.current.playVideo().catch(() => {});
         await playerRef.current.unMute().catch(() => {});
+        errorCountRef.current = 0; // Reset errors on successful load
       } else {
-        // Drift check: only if playing
+        // Drift check
         if (state === 1) { 
           const currentTime = await playerRef.current.getCurrentTime();
-          if (Math.abs(currentTime - startSeconds) > 8) {
+          if (Math.abs(currentTime - startSeconds) > 10) {
              await playerRef.current.seekTo(startSeconds, true);
           }
         } else if (state === 0 || state === 2 || state === 5) {
-          // Play if ended (0), paused (2), or cued (5)
-          await playerRef.current.playVideo();
+          await playerRef.current.playVideo().catch(() => {});
         }
       }
     } catch (error) {
       console.error('Sync failed:', error);
-      // If a major error occurs, try a full reload in 5 seconds
-      setTimeout(() => synchronize(true), 5000);
     } finally {
       syncLockRef.current = false;
     }
@@ -124,6 +119,7 @@ export default function Player() {
   useEffect(() => {
     if (!containerRef.current || playerRef.current) return;
 
+    // Use standard IFrame API initialization
     const player = YouTubePlayer(containerRef.current, {
       width: '100%',
       height: '100%',
@@ -134,8 +130,8 @@ export default function Player() {
         rel: 0,
         iv_load_policy: 3,
         disablekb: 1,
-        enablejsapi: 1,
-        origin: window.location.origin
+        showinfo: 0,
+        enablejsapi: 1
       },
     });
 
@@ -150,9 +146,14 @@ export default function Player() {
 
     player.on('error', (event: any) => {
       console.error('YouTube Player Error:', event.data);
-      // event.data: 2 (invalid param), 5 (HTML5 error), 100 (not found), 101/150 (not allowed)
-      // On error, skip to next likely valid state
-      setTimeout(() => synchronize(true), 3000);
+      // On persistent error, the epoch synchronization will eventually 
+      // move us to the next video in the loop as time progresses.
+      // But we can speed it up if several errors occur.
+      errorCountRef.current += 1;
+      if (errorCountRef.current > 3) {
+        console.warn('Too many errors, forcing re-sync...');
+        setTimeout(() => synchronize(true), 1000);
+      }
     });
 
     return () => {
@@ -166,7 +167,7 @@ export default function Player() {
   // Handle playlist updates or initial load
   useEffect(() => {
     if (playerRef.current && playlist.length > 0) {
-      synchronize(true);
+      setTimeout(() => synchronize(true), 500);
     }
   }, [playlist]);
 
@@ -176,28 +177,40 @@ export default function Player() {
 
     const interval = setInterval(() => {
       synchronize();
-    }, 15000);
+    }, 10000); // Check every 10 seconds
 
     return () => clearInterval(interval);
-  }, [playlist, currentVideoIndex]);
+  }, [playlist]);
 
   return (
-    <div className="w-full h-full bg-black relative overflow-hidden">
-      {/* 
-        Ultra-Scale Crop:
-        We scale push the branding and UI elements entirely outside the viewport.
-      */}
-      <div 
-        ref={containerRef} 
-        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[110vw] h-[110vh] scale-[1.15]" 
-      />
-      
-      {/* Interaction block - prevents YouTube UI from showing */}
-      <div className="absolute inset-0 z-20 pointer-events-auto cursor-none" />
+    <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden pointer-events-none">
+      <div className="w-full h-full pointer-events-auto">
+        <div className="w-full h-full relative">
+          {/* 
+            Strategic Crop:
+            We scale the player to push the UI elements (branding, title) outside the viewport.
+          */}
+          <div 
+            ref={containerRef} 
+            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[115vw] h-[115vh] scale-[1.2]" 
+          />
+          
+          {/* Interaction block - prevents YouTube UI from showing */}
+          <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" />
 
-      {/* Decorative masks to ensure clean edges */}
-      <div className="absolute top-0 left-0 w-full h-[5vh] bg-black z-10" />
-      <div className="absolute bottom-0 left-0 w-full h-[5vh] bg-black z-10" />
+          {/* Clean edge masks */}
+          <div className="absolute top-0 left-0 w-full h-[10vh] bg-black z-30" />
+          <div className="absolute bottom-0 left-0 w-full h-[10vh] bg-black z-30" />
+          <div className="absolute top-0 left-0 h-full w-[10vw] bg-black z-30" />
+          <div className="absolute top-0 right-0 h-full w-[10vw] bg-black z-30" />
+        </div>
+      </div>
+      
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black z-50">
+          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
     </div>
   );
 }
