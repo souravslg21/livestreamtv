@@ -58,11 +58,12 @@ export default function Player() {
     }
   };
 
-  // Initial setup and playlist changes
+  // Initial setup
   useEffect(() => {
     if (!containerRef.current || playerRef.current) return;
 
-    playerRef.current = YouTubePlayer(containerRef.current, {
+    // Initialize player
+    const player = YouTubePlayer(containerRef.current, {
       playerVars: {
         autoplay: 1,
         controls: 0,
@@ -73,46 +74,49 @@ export default function Player() {
       },
     });
 
-    playerRef.current.on('stateChange', (event: any) => {
+    playerRef.current = player;
+
+    player.on('stateChange', (event: any) => {
       // event.data === 0 means the video ended
       if (event.data === 0) {
         handleVideoEnd();
       }
     });
 
-    // Initial sync once player is ready
-    playerRef.current.ready().then(() => {
-      synchronize(true);
-    });
+    // We'll let the playlist effect or the interval handle the first sync
+    // to avoid race conditions with the player initialization.
 
     return () => {
       if (playerRef.current) {
         playerRef.current.destroy();
+        playerRef.current = null;
       }
     };
   }, []);
 
-  // Handle playlist updates or index changes
+  // Handle playlist updates or initial load
   useEffect(() => {
     if (playerRef.current && playlist.length > 0) {
-      synchronize();
+      // Small delay to ensure player internal state is ready
+      const timeout = setTimeout(() => synchronize(true), 500);
+      return () => clearTimeout(timeout);
     }
   }, [playlist]);
 
   // Periodic sync to catch up if window was inactive or drift occurred
   useEffect(() => {
+    if (playlist.length === 0) return;
+
     const interval = setInterval(() => {
-      // Only sync drift if we're not at the very end of a video to avoid flickering transitions
       synchronize();
-    }, 10000); // Every 10 seconds
+    }, 15000); // Every 15 seconds
 
     return () => clearInterval(interval);
   }, [playlist, currentVideoIndex]);
 
   const handleVideoEnd = () => {
-    // Instead of just incrementing, we re-sync to the wall clock
-    // This handles cases where one video might be slightly longer/shorter for different users
-    synchronize(true);
+    // Small delay to let the player state settle
+    setTimeout(() => synchronize(true), 100);
   };
 
   const toggleMute = () => {
