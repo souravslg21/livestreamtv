@@ -1,19 +1,28 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import YouTubePlayer from 'youtube-player';
 import { VideoItem, mockPlaylist } from '@/lib/supabase';
+
+declare global {
+  interface Window {
+    onYouTubeIframeAPIReady: () => void;
+    YT: any;
+  }
+}
 
 export default function Player() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [playlist, setPlaylist] = useState<VideoItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLive, setIsLive] = useState(false);
   const playerRef = useRef<any>(null);
-  const syncLockRef = useRef(false);
-  const skipCountRef = useRef(0);
+  const [skipCount, setSkipCount] = useState(0);
+  const [isActuallyPlaying, setIsActuallyPlaying] = useState(false);
+  
   const lastSyncTimeRef = useRef(0);
+  const syncLockRef = useRef(false);
 
-  // Load playlist
+  // Load playlist and re-fetch every 30s to keep it fresh
   useEffect(() => {
     const fetchPlaylist = async () => {
       try {
@@ -25,38 +34,39 @@ export default function Player() {
           setPlaylist(mockPlaylist);
         }
       } catch (err) {
-        console.error('Playlist fetch error:', err);
+        console.error('Playlist error:', err);
         setPlaylist(mockPlaylist);
       } finally {
         setIsLoading(false);
       }
     };
     fetchPlaylist();
+    const interval = setInterval(fetchPlaylist, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const getSyncInfo = (items: VideoItem[]) => {
     if (items.length === 0) return { videoId: '', startSeconds: 0, isLive: true };
-    
     const now = Math.floor(Date.now() / 1000);
     const epoch = 1735689600; // Jan 1, 2025
     
-    // Check if we have VODs (duration > 0)
+    // Check for VODs
     const vods = items.filter(i => (i.duration || 0) > 0);
-    
     if (vods.length > 0) {
-      // VOD rotation
       const totalDuration = items.reduce((acc, item) => acc + (item.duration || 300), 0);
       const elapsed = (now - epoch) % totalDuration;
       let cumulative = 0;
+      
+      // Simple offset logic: use skipCount to jump to the "next" logical video
+      // Each skip adds an hour of "elapsed" time to find a different video
+      const adjustedElapsed = (elapsed + (skipCount * 3600)) % totalDuration;
+      
       for (let i = 0; i < items.length; i++) {
         const itemDuration = items[i].duration || 300;
-        if (elapsed < cumulative + itemDuration) {
-          // If skipCount is high, we simulate being later in time to skip this video
-          const adjustedElapsed = (elapsed + (skipCountRef.current * 3600)) % totalDuration;
-          // Re-calculate based on adjusted elapsed if needed
+        if (adjustedElapsed < cumulative + itemDuration) {
           return { 
             videoId: items[i].youtube_id, 
-            startSeconds: Math.floor(elapsed - cumulative),
+            startSeconds: Math.floor(adjustedElapsed - cumulative),
             isLive: false 
           };
         }
@@ -64,39 +74,36 @@ export default function Player() {
       }
     }
 
-    // Live Stream Rotation fallback
-    // If multiple live streams, we rotate them if one is failing
-    const index = (Math.floor(now / 3600) + skipCountRef.current) % items.length;
-    return { 
-      videoId: items[index].youtube_id, 
-      startSeconds: 0, 
-      isLive: true 
-    };
+    // Live Stream fallback
+    const index = (Math.floor(now / 3600) + skipCount) % items.length;
+    return { videoId: items[index].youtube_id, startSeconds: 0, isLive: true };
   };
 
   const synchronize = async (forceLoad = false) => {
-    if (!playerRef.current || playlist.length === 0 || syncLockRef.current) return;
+    if (!playerRef.current?.loadVideoById || playlist.length === 0 || syncLockRef.current) return;
     
     syncLockRef.current = true;
-    const { videoId, startSeconds, isLive } = getSyncInfo(playlist);
+    const { videoId, startSeconds, isLive: liveStatus } = getSyncInfo(playlist);
+    setIsLive(liveStatus);
 
     try {
-      const videoData = await playerRef.current.getVideoData();
+      const videoData = playerRef.current.getVideoData?.();
       const loadedVideoId = videoData?.video_id;
 
       if (loadedVideoId !== videoId || forceLoad) {
-        if (isLive) {
-          await playerRef.current.loadVideoById(videoId);
+        setIsActuallyPlaying(false);
+        if (liveStatus) {
+          playerRef.current.loadVideoById(videoId);
         } else {
-          await playerRef.current.loadVideoById(videoId, startSeconds);
+          playerRef.current.loadVideoById(videoId, startSeconds);
         }
-        await playerRef.current.playVideo().catch(() => {});
-        await playerRef.current.unMute().catch(() => {});
+        playerRef.current.playVideo();
+        playerRef.current.mute(); // Start muted to guarantee start
         lastSyncTimeRef.current = Date.now();
       } else {
-        const state = await playerRef.current.getPlayerState();
+        const state = playerRef.current.getPlayerState();
         if (state !== 1 && state !== 3) {
-          await playerRef.current.playVideo().catch(() => {});
+          playerRef.current.playVideo();
         }
       }
     } catch (error) {
@@ -106,104 +113,134 @@ export default function Player() {
     }
   };
 
-  // Watchdog: detect stuck state OR persistent unstarted state
+  // YouTube API Script Loading
   useEffect(() => {
-    const watchdog = setInterval(async () => {
-      if (!playerRef.current) return;
-      try {
-        const state = await playerRef.current.getPlayerState();
-        const timeSinceLastSync = Date.now() - lastSyncTimeRef.current;
+    if (typeof window === 'undefined') return;
+    
+    const tag = document.createElement('script');
+    tag.src = "https://www.youtube.com/iframe_api";
+    const firstScriptTag = document.getElementsByTagName('script')[0];
+    firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
 
-        // If video is stuck in buffering, unstarted, or cued for more than 15 seconds
-        if ((state === -1 || state === 3 || state === 5) && timeSinceLastSync > 15000) {
-          console.warn('Playback PANIC: Video stuck. Skipping to next channel...');
-          skipCountRef.current += 1; // Increment global skip counter
-          synchronize(true);
+    window.onYouTubeIframeAPIReady = () => {
+      if (!containerRef.current) return;
+      
+      const player = new window.YT.Player(containerRef.current, {
+        playerVars: {
+          autoplay: 1,
+          controls: 0,
+          modestbranding: 1,
+          rel: 0,
+          iv_load_policy: 3,
+          disablekb: 1,
+          enablejsapi: 1,
+          origin: window.location.origin
+        },
+        events: {
+          onReady: (event: any) => {
+            playerRef.current = event.target;
+            if (playlist.length > 0) synchronize(true);
+          },
+          onStateChange: (event: any) => {
+            // state 1 = Playing
+            if (event.data === 1) {
+              setIsActuallyPlaying(true);
+              lastSyncTimeRef.current = Date.now();
+            }
+            // state 0 = Ended
+            if (event.data === 0) {
+              synchronize(true);
+            }
+          },
+          onError: (event: any) => {
+            console.error('YT Error:', event.data);
+            setSkipCount(prev => prev + 1);
+            setTimeout(() => synchronize(true), 1000);
+          }
         }
-      } catch (e) {}
-    }, 5000);
-
-    return () => clearInterval(watchdog);
-  }, [playlist]);
-
-  // Initial Player setup
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    const player = YouTubePlayer(containerRef.current, {
-      playerVars: {
-        autoplay: 1,
-        controls: 0,
-        modestbranding: 1,
-        rel: 0,
-        iv_load_policy: 3,
-        disablekb: 1,
-        enablejsapi: 1,
-        origin: window.location.origin
-      },
-    });
-
-    playerRef.current = player;
-
-    player.on('stateChange', (event: any) => {
-      if (event.data === 0) synchronize(true); // Ended
-    });
-
-    player.on('error', (event: any) => {
-      console.error('YouTube Player Error:', event.data);
-      // Immediate panic skip on error
-      skipCountRef.current += 1;
-      setTimeout(() => synchronize(true), 1000);
-    });
+      });
+    };
 
     return () => {
       if (playerRef.current) playerRef.current.destroy();
     };
-  }, []);
-
-  useEffect(() => {
-    if (playlist.length > 0) synchronize(true);
   }, [playlist]);
 
-  // Handle interaction for unmuting
+  // Watchdog: detect stuck state (error screen / permanent buffering)
   useEffect(() => {
-    const handleAction = () => {
+    const watchdog = setInterval(() => {
+      if (!playerRef.current?.getPlayerState) return;
+      
+      const state = playerRef.current.getPlayerState();
+      const timeSinceSync = Date.now() - lastSyncTimeRef.current;
+
+      // If video hasn't REACHED 'playing' state within 6 seconds of a load attempt
+      if (!isActuallyPlaying && timeSinceSync > 6000) {
+        console.warn('Playback Watchdog: Video failed to start. Skipping...');
+        setSkipCount(prev => prev + 1);
+        synchronize(true);
+      }
+
+      // If it's playing but drift occurs (only for VODs)
+      if (isActuallyPlaying && !isLive && timeSinceSync > 20000) {
+        synchronize(); // Subtle sync
+      }
+    }, 4000);
+
+    return () => clearInterval(watchdog);
+  }, [playlist, isActuallyPlaying, isLive, skipCount]);
+
+  // Global interaction unmuter
+  useEffect(() => {
+    const unmute = () => {
       if (playerRef.current) {
-        playerRef.current.unMute().catch(() => {});
-        playerRef.current.playVideo().catch(() => {});
+        playerRef.current.unMute();
+        playerRef.current.setVolume(100);
+        playerRef.current.playVideo();
       }
     };
-    window.addEventListener('mousedown', handleAction);
-    return () => window.removeEventListener('mousedown', handleAction);
+    window.addEventListener('mousedown', unmute);
+    window.addEventListener('touchstart', unmute);
+    return () => {
+      window.removeEventListener('mousedown', unmute);
+      window.removeEventListener('touchstart', unmute);
+    };
   }, []);
 
   return (
     <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex items-center justify-center">
       {/* 
-        HYPER-ZOOM (250%):
-        We zoom in drastically to pull the center of the video forward.
-        This forces ALL edge-based labels, UI, and even the "An error occurred" 
-        text (if it's not perfectly centered) out of the visible viewport.
+        HARD SHIELD ZOOM (3x):
+        Drastically zooms the player to push all YouTube error text and UI edges 
+        completely out of the viewport. This makes even a 'crash' look clean.
       */}
-      <div className="relative w-full h-full overflow-hidden flex items-center justify-center scale-[2.5]">
+      <div className="relative w-full h-full overflow-hidden flex items-center justify-center" 
+           style={{ transform: 'scale(3)', width: '100vw', height: '100vh' }}>
         <div ref={containerRef} className="w-full h-full pointer-events-none" />
       </div>
 
-      {/* Interaction & Protection Masks */}
+      {/* Interaction block - invisible but blocks YouTube's internal titles/hover */}
       <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" />
-      <div className="absolute inset-0 pointer-events-none z-30 ring-[25vw] ring-black" />
 
-      {/* Broadcasting Badge */}
-      <div className="absolute top-8 left-8 z-40">
-        <div className="bg-red-600 px-3 py-1.5 rounded-full text-[10px] font-black text-white flex items-center gap-2 animate-pulse border border-white/10 shadow-2xl">
-          <div className="w-2 h-2 bg-white rounded-full" />
-          BROADCASTING LIVE
+      {/* Blackout Overlay - Stays until video is CONFIRMED playing */}
+      <div className={`absolute inset-0 z-[25] bg-black transition-opacity duration-1000 ${isActuallyPlaying ? 'opacity-0' : 'opacity-100'}`} />
+
+      {/* Perimeter Safe Guard - Double-layer black ring */}
+      <div className="absolute inset-0 pointer-events-none z-30 ring-[20vw] ring-black" />
+
+      {/* Broadcast Info */}
+      {!isLoading && (
+        <div className="absolute top-8 left-8 z-40 transition-opacity duration-500 opacity-80">
+          <div className="bg-red-600 px-3 py-1.5 rounded-full text-[10px] font-bold text-white flex items-center gap-2 border border-white/20 shadow-xl">
+            <div className={`w-2 h-2 bg-white rounded-full ${isActuallyPlaying ? 'animate-pulse' : ''}`} />
+            LIVE TRANSMISSION
+          </div>
         </div>
-      </div>
+      )}
 
       {isLoading && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black">
-          <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
         </div>
       )}
     </div>
