@@ -7,9 +7,25 @@ import { VideoItem, mockPlaylist, supabase } from '@/lib/supabase';
 export default function Player() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
-  const [playlist, setPlaylist] = useState<VideoItem[]>(mockPlaylist);
+  const [playlist, setPlaylist] = useState<VideoItem[]>([]);
   const [isMuted, setIsMuted] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
   const playerRef = useRef<any>(null);
+
+  // Load playlist on mount
+  useEffect(() => {
+    fetch('/api/playlist?format=json')
+      .then(res => res.json())
+      .then(data => {
+        setPlaylist(data);
+        setIsLoading(false);
+      })
+      .catch(err => {
+        console.error('Failed to load playlist:', err);
+        setPlaylist(mockPlaylist); // Fallback to mock on error
+        setIsLoading(false);
+      });
+  }, []);
 
   const getSyncInfo = (items: VideoItem[]) => {
     if (items.length === 0) return { index: 0, startSeconds: 0 };
