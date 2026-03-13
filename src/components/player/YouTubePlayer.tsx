@@ -130,7 +130,6 @@ export default function Player() {
         rel: 0,
         iv_load_policy: 3,
         disablekb: 1,
-        showinfo: 0,
         enablejsapi: 1
       },
     });
