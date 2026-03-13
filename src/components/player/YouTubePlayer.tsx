@@ -176,9 +176,8 @@ export default function Player() {
       const state = playerRef.current.getPlayerState();
       const timeSinceSync = Date.now() - lastSyncTimeRef.current;
 
-      // If video hasn't reached 'playing' (1) or 'buffering' (3) within 5 seconds
-      // OR if it's stuck in 'unstarted' (-1) despite a load attempt
-      if (!isActuallyPlaying && state !== 3 && timeSinceSync > 5000) {
+      // Increased timeout to 10s to allow for slow connections
+      if (!isActuallyPlaying && state !== 1 && state !== 3 && timeSinceSync > 10000) {
         console.warn('Watchdog detected stuck player. Attempting skip...');
         const data = playerRef.current?.getVideoData?.();
         if (data?.video_id) {
@@ -187,36 +186,34 @@ export default function Player() {
         skipOffsetRef.current += 1;
         synchronize(true);
       }
-    }, 3000);
+    }, 4000);
 
     return () => clearInterval(watchdog);
   }, [playlist, isActuallyPlaying]);
 
   // Global interaction unmuter
+  const handleInteraction = () => {
+    if (playerRef.current) {
+      playerRef.current.unMute();
+      playerRef.current.playVideo();
+      // Force state update if it was actually playing but state was stale
+      if (playerRef.current.getPlayerState() === 1) setIsActuallyPlaying(true);
+    }
+  };
+
   useEffect(() => {
-    const unmute = () => {
-      if (playerRef.current) {
-        playerRef.current.unMute();
-        playerRef.current.playVideo();
-      }
-    };
-    window.addEventListener('mousedown', unmute);
-    return () => window.removeEventListener('mousedown', unmute);
+    window.addEventListener('mousedown', handleInteraction);
+    return () => window.removeEventListener('mousedown', handleInteraction);
   }, []);
 
   return (
     <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex items-center justify-center">
-      {/* 
-        Strategic Scale (1.1):
-        Zoomed in just enough to hide watermarks while preserving 
-        the maximum possible video area.
-      */}
       <div className="relative w-full h-full overflow-hidden flex items-center justify-center scale-[1.1]">
         <div ref={containerRef} className="w-full h-full pointer-events-none" />
       </div>
 
-      <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" />
-      <div className="absolute inset-0 pointer-events-none z-30 ring-[5vw] ring-black/20" />
+      <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" onClick={handleInteraction} />
+      <div className="absolute inset-0 pointer-events-none z-30 ring-[5vw] ring-black/10" />
 
       {/* Broadcasting Badge */}
       <div className="absolute top-8 left-8 z-40">
@@ -226,9 +223,16 @@ export default function Player() {
         </div>
       </div>
 
-      {(isLoading || !isActuallyPlaying) && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black">
-          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+      {(!isActuallyPlaying || isLoading) && (
+        <div 
+          className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black transition-opacity duration-1000"
+          onClick={handleInteraction}
+        >
+          <div className="w-12 h-12 border-2 border-white/10 border-t-white rounded-full animate-spin mb-6" />
+          <div className="flex flex-col items-center gap-2">
+            <span className="text-white/40 text-[10px] font-black uppercase tracking-[0.4em] animate-pulse">Establishing Connection</span>
+            <span className="text-white/10 text-[8px] font-bold uppercase tracking-widest mt-4">Tap anywhere to initialize broadcast</span>
+          </div>
         </div>
       )}
     </div>
