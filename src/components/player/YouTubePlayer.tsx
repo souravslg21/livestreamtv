@@ -12,26 +12,10 @@ export default function Player() {
   const playerRef = useRef<any>(null);
   const syncLockRef = useRef(false);
   const watchdogRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTimeRef = useRef(0);
+  const stuckCounterRef = useRef(0);
 
-  // Fallback interaction handler
-  useEffect(() => {
-    const handleFirstInteraction = () => {
-      if (playerRef.current) {
-        playerRef.current.unMute().catch(() => {});
-        playerRef.current.playVideo().catch(() => {});
-      }
-      window.removeEventListener('click', handleFirstInteraction);
-      window.removeEventListener('touchstart', handleFirstInteraction);
-    };
-    window.addEventListener('click', handleFirstInteraction);
-    window.addEventListener('touchstart', handleFirstInteraction);
-    return () => {
-      window.removeEventListener('click', handleFirstInteraction);
-      window.removeEventListener('touchstart', handleFirstInteraction);
-    };
-  }, []);
-
-  // Fetch playlist
+  // Load playlist on mount
   useEffect(() => {
     const fetchPlaylist = async () => {
       try {
@@ -63,10 +47,9 @@ export default function Player() {
     for (let i = 0; i < items.length; i++) {
       const itemDuration = items[i].duration || 300;
       if (elapsed < cumulative + itemDuration) {
-        const start = Math.max(0, Math.floor(elapsed - cumulative));
         return { 
           index: i, 
-          startSeconds: start < itemDuration - 1 ? start : 0,
+          startSeconds: Math.floor(elapsed - cumulative),
           videoId: items[i].youtube_id 
         };
       }
@@ -87,26 +70,19 @@ export default function Player() {
 
       if (loadedVideoId !== videoId || forceLoad) {
         setCurrentVideoIndex(index);
-        // Reset watchdog when loading a new video
-        if (watchdogRef.current) clearTimeout(watchdogRef.current);
-        
         await playerRef.current.loadVideoById(videoId, startSeconds);
         await playerRef.current.playVideo().catch(() => {});
         await playerRef.current.unMute().catch(() => {});
-
-        // Watchdog: If video doesn't start playing within 8 seconds, force re-sync
-        watchdogRef.current = setTimeout(() => {
-          playerRef.current?.getPlayerState().then((state: number) => {
-            if (state !== 1 && state !== 3) { // Not Playing and not Buffering
-              console.warn('Watchdog triggered: Video stuck. Re-syncing...');
-              synchronize(true);
-            }
-          });
-        }, 8000);
       } else {
         const state = await playerRef.current.getPlayerState();
-        if (state === 1) { 
+        if (state === 1) { // Playing
           const currentTime = await playerRef.current.getCurrentTime();
+          // Reset stuck counter if time is moving
+          if (Math.abs(currentTime - lastTimeRef.current) > 0.5) {
+            stuckCounterRef.current = 0;
+            lastTimeRef.current = currentTime;
+          }
+
           if (Math.abs(currentTime - startSeconds) > 10) {
              await playerRef.current.seekTo(startSeconds, true);
           }
@@ -121,12 +97,42 @@ export default function Player() {
     }
   };
 
+  // Watchdog loop: runs every 5 seconds to ensure we aren't stuck on an error screen
+  useEffect(() => {
+    const watchdog = setInterval(async () => {
+      if (!playerRef.current) return;
+      
+      try {
+        const state = await playerRef.current.getPlayerState();
+        const currentTime = await playerRef.current.getCurrentTime();
+        
+        // If state is not playing, or time hasn't moved, increment stuck counter
+        if (state !== 1 || Math.abs(currentTime - lastTimeRef.current) < 0.1) {
+          stuckCounterRef.current += 1;
+        } else {
+          stuckCounterRef.current = 0;
+          lastTimeRef.current = currentTime;
+        }
+
+        // If stuck for more than 15 seconds (3 checks), force a payload reload
+        if (stuckCounterRef.current >= 3) {
+          console.warn('Playback watchdog: detected stuck state. Forcing re-sync...');
+          stuckCounterRef.current = 0;
+          synchronize(true);
+        }
+      } catch (e) {
+        // Ignore errors during watchdog if player is transitioning
+      }
+    }, 5000);
+
+    return () => clearInterval(watchdog);
+  }, [playlist]);
+
+  // Initial Player setup
   useEffect(() => {
     if (!containerRef.current || playerRef.current) return;
 
     const player = YouTubePlayer(containerRef.current, {
-      width: '100%',
-      height: '100%',
       playerVars: {
         autoplay: 1,
         controls: 0,
@@ -135,69 +141,73 @@ export default function Player() {
         iv_load_policy: 3,
         disablekb: 1,
         enablejsapi: 1,
-        origin: typeof window !== 'undefined' ? window.location.origin : undefined
+        mute: 1, // Start muted as primary strategy for autoplay success
+        origin: window.location.origin
       },
     });
 
     playerRef.current = player;
 
     player.on('stateChange', (event: any) => {
-      // Clear watchdog if it starts playing
-      if (event.data === 1 && watchdogRef.current) {
-        clearTimeout(watchdogRef.current);
-        watchdogRef.current = null;
-      }
-      
       if (event.data === 0) { // Ended
         synchronize(true);
       }
     });
 
-    player.on('error', (event: any) => {
-      console.error('YouTube Player Error:', event.data);
-      // On any error (video blocked, deleted, etc.), try to skip to what SHOULD be playing now
-      setTimeout(() => synchronize(true), 2000);
-    });
+    // Re-attempt unmute on first click anywhere
+    const unmuteAll = () => {
+      if (playerRef.current) {
+        playerRef.current.unMute().catch(() => {});
+        playerRef.current.playVideo().catch(() => {});
+      }
+      window.removeEventListener('mousedown', unmuteAll);
+    };
+    window.addEventListener('mousedown', unmuteAll);
 
     return () => {
       if (playerRef.current) {
         playerRef.current.destroy();
         playerRef.current = null;
       }
-      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      window.removeEventListener('mousedown', unmuteAll);
     };
   }, []);
 
+  // Sync on playlist load
   useEffect(() => {
     if (playerRef.current && playlist.length > 0) {
-      synchronize(true);
+      setTimeout(() => synchronize(true), 1000);
     }
   }, [playlist]);
 
-  useEffect(() => {
-    if (playlist.length === 0) return;
-    const interval = setInterval(() => synchronize(), 15000);
-    return () => clearInterval(interval);
-  }, [playlist]);
-
   return (
-    <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden pointer-events-none">
-      <div className="w-full h-full pointer-events-auto relative">
+    <main className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex items-center justify-center">
+      {/* 
+        The "Ultimate Crop" Layout:
+        We make the player vastly larger than the viewport (150%) 
+        and use relative positioning to ensure the center of the video is shown.
+        This effectively hides all YouTube overlays, titles, and error messages 
+        which are usually positioned at the edges/corners.
+      */}
+      <div className="relative w-full h-full overflow-hidden flex items-center justify-center">
         <div 
           ref={containerRef} 
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[120vw] h-[120vh] scale-[1.25]" 
+          className="w-[160vw] h-[160vh] min-w-[160vh] min-h-[160vw] pointer-events-none"
+          style={{ transform: 'scale(1.2)' }}
         />
+        
+        {/* Interaction blocker - invisible but blocks YouTube's internal controls */}
         <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" />
         
-        {/* Extreme Edge Guards */}
-        <div className="absolute inset-0 border-[10vw] border-black z-30 pointer-events-none" />
+        {/* Safe Area Edge Protectors (Black Bars to catch any bleeding UI) */}
+        <div className="absolute inset-0 pointer-events-none z-30 ring-[15vw] ring-black" />
       </div>
-      
+
       {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black z-50">
-          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black">
+          <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
-    </div>
+    </main>
   );
 }
