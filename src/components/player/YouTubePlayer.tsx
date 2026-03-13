@@ -11,6 +11,7 @@ export default function Player() {
   const [isMuted, setIsMuted] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const playerRef = useRef<any>(null);
+  const syncLockRef = useRef(false);
 
   // Attempt to unmute on first user interaction as a fallback for 
   // browser autoplay restrictions
@@ -18,6 +19,7 @@ export default function Player() {
     const handleFirstInteraction = () => {
       if (playerRef.current) {
         playerRef.current.unMute().catch(() => {});
+        playerRef.current.playVideo().catch(() => {});
       }
       window.removeEventListener('click', handleFirstInteraction);
       window.removeEventListener('touchstart', handleFirstInteraction);
@@ -32,62 +34,84 @@ export default function Player() {
 
   // Load playlist on mount
   useEffect(() => {
-    fetch('/api/playlist?format=json')
-      .then(res => res.json())
-      .then(data => {
-        setPlaylist(data);
-        setIsLoading(false);
-      })
-      .catch(err => {
+    const fetchPlaylist = async () => {
+      try {
+        const res = await fetch('/api/playlist?format=json');
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          setPlaylist(data);
+        } else {
+          setPlaylist(mockPlaylist);
+        }
+      } catch (err) {
         console.error('Failed to load playlist:', err);
-        setPlaylist(mockPlaylist); // Fallback to mock on error
+        setPlaylist(mockPlaylist);
+      } finally {
         setIsLoading(false);
-      });
+      }
+    };
+    fetchPlaylist();
   }, []);
 
   const getSyncInfo = (items: VideoItem[]) => {
     if (items.length === 0) return { index: 0, startSeconds: 0 };
     
-    // Calculate total duration, assuming 5 mins (300s) for items with 0 duration
     const totalDuration = items.reduce((acc, item) => acc + (item.duration || 300), 0);
     const now = Math.floor(Date.now() / 1000);
     const epoch = 1735689600; // Jan 1, 2025 00:00:00 UTC
+    
+    // The modulo handles the infinite loop
     const elapsed = (now - epoch) % totalDuration;
 
     let cumulative = 0;
     for (let i = 0; i < items.length; i++) {
       const itemDuration = items[i].duration || 300;
       if (elapsed < cumulative + itemDuration) {
-        return { index: i, startSeconds: Math.floor(elapsed - cumulative) };
+        return { 
+          index: i, 
+          startSeconds: Math.floor(elapsed - cumulative),
+          videoId: items[i].youtube_id 
+        };
       }
       cumulative += itemDuration;
     }
-    return { index: 0, startSeconds: 0 };
+    return { index: 0, startSeconds: 0, videoId: items[0].youtube_id };
   };
 
-  // Synchronize player with the "universal" wall-clock time
-  const synchronize = async (forceSeek = false) => {
-    if (!playerRef.current || playlist.length === 0) return;
-
-    const { index, startSeconds } = getSyncInfo(playlist);
-    const video = playlist[index];
+  const synchronize = async (forceLoad = false) => {
+    if (!playerRef.current || playlist.length === 0 || syncLockRef.current) return;
+    
+    syncLockRef.current = true;
+    const { index, startSeconds, videoId } = getSyncInfo(playlist);
 
     try {
-      // Check what's currently playing to avoid unnecessary resets
-      if (index !== currentVideoIndex || forceSeek) {
+      const currentPlayerState = await playerRef.current.getPlayerState();
+      // Use the internal player's video data to see what's actually loaded
+      const videoData = await playerRef.current.getVideoData();
+      const loadedVideoId = videoData?.video_id;
+
+      if (loadedVideoId !== videoId || forceLoad) {
         setCurrentVideoIndex(index);
-        await playerRef.current.loadVideoById(video.youtube_id, startSeconds);
+        await playerRef.current.loadVideoById(videoId, startSeconds);
         await playerRef.current.playVideo();
         await playerRef.current.unMute().catch(() => {});
       } else {
-        // Just check for drift if we are already on the right video
-        const currentTime = await playerRef.current.getCurrentTime();
-        if (Math.abs(currentTime - startSeconds) > 5) {
-          await playerRef.current.seekTo(startSeconds, true);
+        // If it's already playing, just check for drift
+        if (currentPlayerState === 1) { // 1 = Playing
+          const currentTime = await playerRef.current.getCurrentTime();
+          if (Math.abs(currentTime - startSeconds) > 5) {
+            await playerRef.current.seekTo(startSeconds, true);
+          }
+        } else if (currentPlayerState === 0 || currentPlayerState === 2 || currentPlayerState === 5) {
+          // If ended, paused, or cued but should be playing, start it
+          await playerRef.current.playVideo();
+          if (!isMuted) await playerRef.current.unMute().catch(() => {});
         }
       }
     } catch (error) {
       console.error('Sync failed:', error);
+    } finally {
+      syncLockRef.current = false;
     }
   };
 
@@ -95,7 +119,6 @@ export default function Player() {
   useEffect(() => {
     if (!containerRef.current || playerRef.current) return;
 
-    // Initialize player
     const player = YouTubePlayer(containerRef.current, {
       playerVars: {
         autoplay: 1,
@@ -104,6 +127,7 @@ export default function Player() {
         rel: 0,
         iv_load_policy: 3,
         disablekb: 1,
+        mute: 1, // Start muted to guarantee autoplay
       },
     });
 
@@ -112,7 +136,7 @@ export default function Player() {
     player.on('stateChange', (event: any) => {
       // event.data === 0 means the video ended
       if (event.data === 0) {
-        handleVideoEnd();
+        synchronize(true);
       }
     });
 
@@ -127,44 +151,30 @@ export default function Player() {
   // Handle playlist updates or initial load
   useEffect(() => {
     if (playerRef.current && playlist.length > 0) {
-      // Small delay to ensure player internal state is ready
-      const timeout = setTimeout(() => synchronize(true), 500);
-      return () => clearTimeout(timeout);
+      synchronize(true);
     }
   }, [playlist]);
 
-  // Periodic sync to catch up if window was inactive or drift occurred
+  // Periodic sync to catch up and handle looping
   useEffect(() => {
     if (playlist.length === 0) return;
 
     const interval = setInterval(() => {
       synchronize();
-    }, 15000); // Every 15 seconds
+    }, 10000); // Check every 10 seconds
 
     return () => clearInterval(interval);
-  }, [playlist, currentVideoIndex]);
-
-  const handleVideoEnd = () => {
-    // Small delay to let the player state settle
-    setTimeout(() => synchronize(true), 100);
-  };
+  }, [playlist]);
 
   return (
     <div className="w-full aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/10 relative group">
-      {/* 
-        Interaction Guard & Scale Crop Logic:
-        1. Scale the player by 1.15x to push corner branding outside the bounds.
-        2. Use a transparent overlay (z-20) to block YouTube's hover UI.
-      */}
       <div 
         ref={containerRef} 
         className="w-full h-full scale-[1.12]" 
       />
       
-      {/* Interaction block - prevents YouTube UI from showing on hover/click */}
       <div className="absolute inset-0 z-20 pointer-events-auto cursor-default" />
 
-      {/* Aesthetic Masks to catch any stray border elements */}
       <div className="absolute top-0 left-0 w-full h-16 bg-gradient-to-b from-black/80 to-transparent z-10 pointer-events-none" />
       <div className="absolute bottom-0 left-0 w-full h-16 bg-gradient-to-t from-black/80 to-transparent z-10 pointer-events-none" />
       
