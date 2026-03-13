@@ -15,8 +15,13 @@ export default function Player() {
   const [playlist, setPlaylist] = useState<VideoItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const playerRef = useRef<any>(null);
-  const [skipCount, setSkipCount] = useState(0);
+  const [isActuallyPlaying, setIsActuallyPlaying] = useState(false);
+  
+  // High-Speed Recovery State
+  const skipOffsetRef = useRef(0);
   const lastSyncTimeRef = useRef(0);
+  const blockedVideosRef = useRef<Set<string>>(new Set());
+  const syncLockRef = useRef(false);
 
   // Load playlist
   useEffect(() => {
@@ -45,18 +50,27 @@ export default function Player() {
     const epoch = 1735689600; // Jan 1, 2025
     
     const totalDuration = items.reduce((acc, item) => acc + (item.duration || 300), 0);
-    const elapsed = (now - epoch) % totalDuration;
+    let elapsed = (now - epoch) % totalDuration;
     
-    // Adjusted elapsed handles skipping a video that might be failing
-    const adjustedElapsed = (elapsed + (skipCount * 3600)) % totalDuration;
+    // Recovery: Add skipOffset to elapsed to bypass restricted content
+    // Each skipOffset represents skipping a roughly 5-minute segment
+    elapsed = (elapsed + (skipOffsetRef.current * 300)) % totalDuration;
     
     let cumulative = 0;
     for (let i = 0; i < items.length; i++) {
       const itemDuration = items[i].duration || 300;
-      if (adjustedElapsed < cumulative + itemDuration) {
+      if (elapsed < cumulative + itemDuration) {
+        const videoId = items[i].youtube_id;
+        
+        // If this specific video is known to be blocked, recursively find the next
+        if (blockedVideosRef.current.has(videoId)) {
+          skipOffsetRef.current += 1;
+          return getSyncInfo(items);
+        }
+
         return { 
-          videoId: items[i].youtube_id, 
-          startSeconds: Math.floor(adjustedElapsed - cumulative)
+          videoId, 
+          startSeconds: Math.floor(elapsed - cumulative)
         };
       }
       cumulative += itemDuration;
@@ -65,8 +79,9 @@ export default function Player() {
   };
 
   const synchronize = async (forceLoad = false) => {
-    if (!playerRef.current || playlist.length === 0) return;
+    if (!playerRef.current?.loadVideoById || playlist.length === 0 || syncLockRef.current) return;
     
+    syncLockRef.current = true;
     const { videoId, startSeconds } = getSyncInfo(playlist);
 
     try {
@@ -74,6 +89,7 @@ export default function Player() {
       const loadedVideoId = videoData?.video_id;
 
       if (loadedVideoId !== videoId || forceLoad) {
+        setIsActuallyPlaying(false);
         playerRef.current.loadVideoById(videoId, startSeconds);
         playerRef.current.playVideo();
         playerRef.current.unMute();
@@ -86,19 +102,19 @@ export default function Player() {
       }
     } catch (error) {
       console.error('Sync failed:', error);
+    } finally {
+      syncLockRef.current = false;
     }
   };
 
-  // YouTube API initialization
+  // YouTube API Script Loading
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const initPlayer = () => {
       if (!containerRef.current || playerRef.current) return;
       
-      playerRef.current = new window.YT.Player(containerRef.current, {
-        height: '100%',
-        width: '100%',
+      const player = new window.YT.Player(containerRef.current, {
         playerVars: {
           autoplay: 1,
           controls: 0,
@@ -107,18 +123,28 @@ export default function Player() {
           iv_load_policy: 3,
           disablekb: 1,
           enablejsapi: 1,
-          mute: 0
+          origin: window.location.origin
         },
         events: {
-          onReady: () => {
+          onReady: (event: any) => {
+            playerRef.current = event.target;
             if (playlist.length > 0) synchronize(true);
           },
           onStateChange: (event: any) => {
+            if (event.data === 1) {
+              setIsActuallyPlaying(true);
+              lastSyncTimeRef.current = Date.now();
+            }
             if (event.data === 0) synchronize(true); // Ended
           },
-          onError: () => {
-            setSkipCount(prev => prev + 1);
-            setTimeout(() => synchronize(true), 2000);
+          onError: (event: any) => {
+            const data = playerRef.current?.getVideoData?.();
+            if (data?.video_id) {
+              console.warn(`Video ${data.video_id} is restricted. Blacklisting...`);
+              blockedVideosRef.current.add(data.video_id);
+            }
+            skipOffsetRef.current += 1;
+            setTimeout(() => synchronize(true), 500);
           }
         }
       });
@@ -142,41 +168,67 @@ export default function Player() {
     };
   }, [playlist]);
 
-  // Sync on interaction to bypass audio blocks
+  // Watchdog: Detect "Video unavailable" overlays that don't trigger onError
   useEffect(() => {
-    const handleAction = () => {
+    const watchdog = setInterval(() => {
+      if (!playerRef.current?.getPlayerState) return;
+      
+      const state = playerRef.current.getPlayerState();
+      const timeSinceSync = Date.now() - lastSyncTimeRef.current;
+
+      // If video hasn't reached 'playing' (1) or 'buffering' (3) within 5 seconds
+      // OR if it's stuck in 'unstarted' (-1) despite a load attempt
+      if (!isActuallyPlaying && state !== 3 && timeSinceSync > 5000) {
+        console.warn('Watchdog detected stuck player. Attempting skip...');
+        const data = playerRef.current?.getVideoData?.();
+        if (data?.video_id) {
+            blockedVideosRef.current.add(data.video_id);
+        }
+        skipOffsetRef.current += 1;
+        synchronize(true);
+      }
+    }, 3000);
+
+    return () => clearInterval(watchdog);
+  }, [playlist, isActuallyPlaying]);
+
+  // Global interaction unmuter
+  useEffect(() => {
+    const unmute = () => {
       if (playerRef.current) {
         playerRef.current.unMute();
         playerRef.current.playVideo();
       }
     };
-    window.addEventListener('mousedown', handleAction);
-    return () => window.removeEventListener('mousedown', handleAction);
+    window.addEventListener('mousedown', unmute);
+    return () => window.removeEventListener('mousedown', unmute);
   }, []);
 
   return (
     <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex items-center justify-center">
-      <div className="relative w-full h-full overflow-hidden flex items-center justify-center scale-[1.25]">
+      {/* 
+        Strategic Scale (150%):
+        Zoomed in to hide watermarks AND any "Playback disabled" subtext 
+        that usually appears at the very bottom or top of the overlay.
+      */}
+      <div className="relative w-full h-full overflow-hidden flex items-center justify-center scale-[1.5]">
         <div ref={containerRef} className="w-full h-full pointer-events-none" />
       </div>
 
-      {/* Interaction blocker */}
       <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" />
-      
-      {/* Subtle edge masks */}
-      <div className="absolute inset-0 pointer-events-none z-30 ring-[8vw] ring-black/40" />
+      <div className="absolute inset-0 pointer-events-none z-30 ring-[15vw] ring-black" />
 
-      {/* Broadcast Info */}
+      {/* Broadcasting Badge */}
       <div className="absolute top-8 left-8 z-40">
-        <div className="bg-red-600 px-3 py-1.5 rounded text-[10px] font-black text-white flex items-center gap-2 shadow-lg">
-          <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+        <div className="bg-red-600 px-3 py-1.5 rounded-full text-[10px] font-black text-white flex items-center gap-2 animate-pulse border border-white/10 shadow-2xl">
+          <div className="w-2 h-2 bg-white rounded-full" />
           BROADCASTING LIVE
         </div>
       </div>
 
-      {isLoading && (
+      {(isLoading || !isActuallyPlaying) && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black">
-          <span className="text-white/20 text-xs font-bold uppercase tracking-widest animate-pulse">Initializing Stream...</span>
+          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
         </div>
       )}
     </div>
