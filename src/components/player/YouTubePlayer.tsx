@@ -119,6 +119,7 @@ export default function Player() {
       const player = new window.YT.Player(containerRef.current, {
         playerVars: {
           autoplay: 1,
+          mute: 1, // Required for guaranteed browser autoplay
           controls: 0,
           modestbranding: 1,
           rel: 0,
@@ -142,7 +143,11 @@ export default function Player() {
               hasEverStartedRef.current = true;
               lastSyncTimeRef.current = Date.now();
             }
-            if (event.data === 0) synchronize(true); // Ended
+            if (event.data === 0) { // Video Ended
+              console.log('Video ended, forcing next segment...');
+              skipOffsetRef.current += 1; // Advance to ensure we don't reload the same
+              synchronize(true);
+            }
           },
           onError: (event: any) => {
             const data = playerRef.current?.getVideoData?.();
@@ -201,11 +206,18 @@ export default function Player() {
 
   const handleInteraction = () => {
     if (playerRef.current) {
-      playerRef.current.unMute();
-      playerRef.current.playVideo();
-      if (playerRef.current.getPlayerState() === 1) {
-        setStatus('PLAYING');
-        setIsActuallyPlaying(true);
+      try {
+        playerRef.current.unMute();
+        playerRef.current.setVolume(100);
+        playerRef.current.playVideo();
+        // If we are already playing but just muted, help the UI catch up
+        const state = playerRef.current.getPlayerState();
+        if (state === 1) {
+          setStatus('PLAYING');
+          setIsActuallyPlaying(true);
+        }
+      } catch (e) {
+        console.warn('Interaction sync failed', e);
       }
     }
   };
