@@ -2,88 +2,151 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
-import { Volume2, VolumeX, Maximize2, Activity } from 'lucide-react';
+import { Volume2, VolumeX, Maximize2, Activity, RefreshCw } from 'lucide-react';
+import { VideoItem, mockPlaylist } from '@/lib/supabase';
 
 export default function HLSPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
+  const [playlist, setPlaylist] = useState<VideoItem[]>([]);
   const [isMuted, setIsMuted] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const hlsRef = useRef<Hls | null>(null);
+  const syncLockRef = useRef(false);
 
-  const streamUrl = '/live/index.m3u8';
-
+  // Load playlist on mount
   useEffect(() => {
-    let hls: Hls;
+    const fetchPlaylist = async () => {
+      try {
+        const res = await fetch('/api/playlist?format=json');
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          setPlaylist(data);
+        } else {
+          setPlaylist(mockPlaylist);
+        }
+      } catch (err) {
+        console.error('Failed to load playlist:', err);
+        setPlaylist(mockPlaylist);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchPlaylist();
+  }, []);
 
-    if (videoRef.current) {
-        const video = videoRef.current;
+  const getSyncInfo = (items: VideoItem[]) => {
+    if (items.length === 0) return { index: 0, startSeconds: 0, videoId: '' };
+    const totalDuration = items.reduce((acc, item) => acc + (item.duration || 300), 0);
+    const now = Math.floor(Date.now() / 1000);
+    const epoch = 1735689600; // Jan 1, 2025
+    const elapsed = (now - epoch) % totalDuration;
+
+    let cumulative = 0;
+    for (let i = 0; i < items.length; i++) {
+      const itemDuration = items[i].duration || 300;
+      if (elapsed < cumulative + itemDuration) {
+        return { 
+          index: i, 
+          startSeconds: Math.floor(elapsed - cumulative),
+          videoId: items[i].youtube_id 
+        };
+      }
+      cumulative += itemDuration;
+    }
+    return { index: 0, startSeconds: 0, videoId: items[0].youtube_id };
+  };
+
+  const synchronize = async (forceLoad = false) => {
+    if (!videoRef.current || playlist.length === 0 || syncLockRef.current) return;
+    
+    syncLockRef.current = true;
+    const { index, startSeconds, videoId } = getSyncInfo(playlist);
+
+    try {
+      const currentVideo = playlist[currentVideoIndex];
+      const shouldLoad = forceLoad || !isPlaying || currentVideoIndex !== index;
+
+      if (shouldLoad) {
+        setCurrentVideoIndex(index);
+        const streamUrl = `/api/stream?v=${videoId}`;
+        setHasError(false);
 
         if (Hls.isSupported()) {
-            hls = new Hls({
-                enableWorker: true,
-                lowLatencyMode: true,
-            });
-            hls.loadSource(streamUrl);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                video.play().catch(() => {
-                    console.log("Autoplay blocked, waiting for user interaction");
-                    setIsPlaying(false);
-                });
-            });
-
-            hls.on(Hls.Events.ERROR, (event, data) => {
-                if (data.fatal) {
-                    switch (data.type) {
-                        case Hls.ErrorTypes.NETWORK_ERROR:
-                            console.log("Network error, trying to recover...");
-                            hls.startLoad();
-                            break;
-                        case Hls.ErrorTypes.MEDIA_ERROR:
-                            console.log("Media error, trying to recover...");
-                            hls.recoverMediaError();
-                            break;
-                        default:
-                            console.error("Fatal error, cannot recover");
-                            setHasError(true);
-                            hls.destroy();
-                            break;
-                    }
-                }
-            });
+          if (hlsRef.current) hlsRef.current.destroy();
+          const hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: true,
+            backBufferLength: 0,
+          });
+          hlsRef.current = hls;
+          hls.loadSource(streamUrl);
+          hls.attachMedia(videoRef.current);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            if (videoRef.current) {
+                videoRef.current.currentTime = startSeconds;
+                videoRef.current.play().catch(() => setIsPlaying(false));
+            }
+          });
+          hls.on(Hls.Events.ERROR, (event, data) => {
+            if (data.fatal) {
+               console.error('HLS Fatal Error:', data.type);
+               setTimeout(() => synchronize(true), 3000);
+            }
+          });
+        } else if (videoRef.current.canPlayType('application/vnd.apple.mpegurl')) {
+          videoRef.current.src = streamUrl;
+          videoRef.current.currentTime = startSeconds;
+          videoRef.current.play().catch(() => setIsPlaying(false));
         }
-        else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = streamUrl;
-            video.addEventListener('loadedmetadata', () => {
-                video.play().catch(() => setIsPlaying(false));
-            });
+      } else {
+        // Drift check
+        const currentTime = videoRef.current.currentTime;
+        if (Math.abs(currentTime - startSeconds) > 8) {
+          videoRef.current.currentTime = startSeconds;
         }
-    }
-
-    return () => {
-        if (hls) {
-            hls.destroy();
-        }
-    };
-  }, [streamUrl]);
-
-  const toggleMute = () => {
-    if (videoRef.current) {
-        videoRef.current.muted = !videoRef.current.muted;
-        setIsMuted(videoRef.current.muted);
+      }
+    } catch (error) {
+      console.error('Sync failed:', error);
+    } finally {
+      syncLockRef.current = false;
     }
   };
 
-  const toggleFullScreen = () => {
+  // Periodic sync and end detection
+  useEffect(() => {
+    if (playlist.length === 0) return;
+    const interval = setInterval(() => synchronize(), 10000);
+    
+    const video = videoRef.current;
+    const handleEnded = () => synchronize(true);
+    if (video) video.addEventListener('ended', handleEnded);
+
+    return () => {
+      clearInterval(interval);
+      if (video) video.removeEventListener('ended', handleEnded);
+    };
+  }, [playlist, currentVideoIndex]);
+
+  // Initial sync when playlist arrives
+  useEffect(() => {
+    if (playlist.length > 0) {
+      synchronize(true);
+    }
+  }, [playlist]);
+
+  const toggleMute = () => {
     if (videoRef.current) {
-        if (videoRef.current.requestFullscreen) {
-            videoRef.current.requestFullscreen();
-        }
+      videoRef.current.muted = !videoRef.current.muted;
+      setIsMuted(videoRef.current.muted);
+      if (!videoRef.current.muted) videoRef.current.play().catch(() => {});
     }
   };
 
   return (
-    <div className="w-full aspect-video bg-black rounded-3xl overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.5)] border border-white/5 relative group">
+    <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex items-center justify-center">
       <video 
         ref={videoRef} 
         className="w-full h-full object-cover"
@@ -92,66 +155,48 @@ export default function HLSPlayer() {
         onPlay={() => setIsPlaying(true)}
       />
 
-      {/* Control Overlays */}
-      <div className="absolute top-6 left-6 flex items-center gap-3 pointer-events-none z-10">
-        <div className="bg-red-600 text-white text-[11px] font-black px-2.5 py-1 rounded flex items-center gap-2 shadow-lg animate-pulse">
+      {/* Extreme Edge Guards (Black Bars) */}
+      <div className="absolute inset-0 pointer-events-none z-30 ring-[10vw] ring-black/20" />
+
+      {/* Professional Status Overlay */}
+      <div className="absolute top-8 left-8 flex items-center gap-4 pointer-events-none z-40">
+        <div className="bg-red-600/90 text-white text-[10px] font-black px-3 py-1.5 rounded-full flex items-center gap-2 shadow-2xl backdrop-blur-md border border-white/10 animate-pulse">
           <Activity className="w-3 h-3" />
-          24/7 LIVE
-        </div>
-        <div className="bg-black/40 backdrop-blur-xl border border-white/10 text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest shadow-xl">
-          1080p Crystal Stream
+          BROADCASTING LIVE
         </div>
       </div>
 
-      {/* Interactive Controls */}
-      <div className="absolute bottom-6 right-6 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all duration-300 transform translate-y-2 group-hover:translate-y-0 z-10">
-        <button 
-          onClick={toggleMute}
-          className="p-3 bg-white/10 backdrop-blur-2xl hover:bg-white/20 rounded-2xl border border-white/10 text-white transition-all active:scale-90"
-        >
-          {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
-        </button>
-        <button 
-          onClick={toggleFullScreen}
-          className="p-3 bg-white/10 backdrop-blur-2xl hover:bg-white/20 rounded-2xl border border-white/10 text-white transition-all active:scale-90"
-        >
-          <Maximize2 className="w-5 h-5" />
-        </button>
-      </div>
+      {/* Hidden Control Interaction Block */}
+      <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" onClick={toggleMute} />
 
-      {/* Centered Unmute Prompt */}
-      {isMuted && isPlaying && (
+      {/* Centered Unmute Interaction Prompt (Only if muted and browser blocks autoplay) */}
+      {isMuted && (
         <button 
           onClick={toggleMute}
-          className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/40 transition-colors z-20 group/unmute"
+          className="absolute inset-0 flex items-center justify-center bg-black/10 hover:bg-black/30 transition-all z-50 group"
         >
-          <div className="bg-white/10 backdrop-blur-3xl border border-white/20 px-8 py-4 rounded-[2rem] flex items-center gap-4 animate-bounce shadow-[0_20px_50px_rgba(0,0,0,0.3)] group-hover/unmute:scale-105 transition-transform">
-            <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center shadow-inner">
-                <VolumeX className="w-5 h-5 text-white animate-pulse" />
+          <div className="bg-white/5 backdrop-blur-3xl border border-white/10 px-10 py-5 rounded-[3rem] flex items-center gap-6 animate-bounce shadow-2xl transition-transform group-hover:scale-110">
+            <div className="w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center shadow-lg border border-white/20">
+                <VolumeX className="w-6 h-6 text-white" />
             </div>
             <div className="flex flex-col items-start leading-tight">
-                <span className="text-white font-black text-sm uppercase tracking-tighter">Click to Unmute</span>
-                <span className="text-white/40 text-[9px] font-bold uppercase tracking-widest">Experience 1080p Sound</span>
+                <span className="text-white font-black text-lg uppercase tracking-tighter">Click to Unmute</span>
+                <span className="text-white/40 text-[10px] font-bold uppercase tracking-[0.2em]">Cinematic Audio is Waiting</span>
             </div>
           </div>
         </button>
       )}
 
-      {/* Connection Error State */}
-      {hasError && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 gap-4 z-30">
-            <div className="w-16 h-16 bg-red-600/20 rounded-full flex items-center justify-center border border-red-600/30">
-                <Activity className="w-8 h-8 text-red-600" />
-            </div>
-            <div className="text-center">
-                <h3 className="text-white font-bold">Stream Offline</h3>
-                <p className="text-slate-500 text-xs">Waiting for encoder to connect...</p>
-            </div>
+      {/* Global Persistence Watchdog Indicator (Hidden) */}
+      <div className="absolute bottom-4 right-4 opacity-5">
+         <RefreshCw className="w-4 h-4 text-white animate-spin" />
+      </div>
+
+      {isLoading && (
+        <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black">
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin shadow-2xl" />
         </div>
       )}
-
-      {/* Vignette Effect */}
-      <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-black/40 via-transparent to-black/40" />
     </div>
   );
 }
