@@ -141,7 +141,6 @@ export default function Player() {
         iv_load_policy: 3,
         disablekb: 1,
         enablejsapi: 1,
-        mute: 1, // Start muted as primary strategy for autoplay success
         origin: window.location.origin
       },
     });
