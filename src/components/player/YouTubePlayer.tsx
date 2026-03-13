@@ -8,9 +8,27 @@ export default function Player() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
   const [playlist, setPlaylist] = useState<VideoItem[]>([]);
-  const [isMuted, setIsMuted] = useState(true);
+  const [isMuted, setIsMuted] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const playerRef = useRef<any>(null);
+
+  // Attempt to unmute on first user interaction as a fallback for 
+  // browser autoplay restrictions
+  useEffect(() => {
+    const handleFirstInteraction = () => {
+      if (playerRef.current) {
+        playerRef.current.unMute().catch(() => {});
+      }
+      window.removeEventListener('click', handleFirstInteraction);
+      window.removeEventListener('touchstart', handleFirstInteraction);
+    };
+    window.addEventListener('click', handleFirstInteraction);
+    window.addEventListener('touchstart', handleFirstInteraction);
+    return () => {
+      window.removeEventListener('click', handleFirstInteraction);
+      window.removeEventListener('touchstart', handleFirstInteraction);
+    };
+  }, []);
 
   // Load playlist on mount
   useEffect(() => {
@@ -56,12 +74,11 @@ export default function Player() {
 
     try {
       // Check what's currently playing to avoid unnecessary resets
-      // Note: We use the index to track our intended state
       if (index !== currentVideoIndex || forceSeek) {
         setCurrentVideoIndex(index);
         await playerRef.current.loadVideoById(video.youtube_id, startSeconds);
         await playerRef.current.playVideo();
-        if (isMuted) await playerRef.current.mute();
+        await playerRef.current.unMute().catch(() => {});
       } else {
         // Just check for drift if we are already on the right video
         const currentTime = await playerRef.current.getCurrentTime();
@@ -99,9 +116,6 @@ export default function Player() {
       }
     });
 
-    // We'll let the playlist effect or the interval handle the first sync
-    // to avoid race conditions with the player initialization.
-
     return () => {
       if (playerRef.current) {
         playerRef.current.destroy();
@@ -135,18 +149,6 @@ export default function Player() {
     setTimeout(() => synchronize(true), 100);
   };
 
-  const toggleMute = () => {
-    if (playerRef.current) {
-      if (isMuted) {
-        playerRef.current.unMute();
-        setIsMuted(false);
-      } else {
-        playerRef.current.mute();
-        setIsMuted(true);
-      }
-    }
-  };
-
   return (
     <div className="w-full aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/10 relative group">
       {/* 
@@ -160,7 +162,7 @@ export default function Player() {
       />
       
       {/* Interaction block - prevents YouTube UI from showing on hover/click */}
-      <div className="absolute inset-0 z-20 pointer-events-auto cursor-default" onClick={toggleMute} />
+      <div className="absolute inset-0 z-20 pointer-events-auto cursor-default" />
 
       {/* Aesthetic Masks to catch any stray border elements */}
       <div className="absolute top-0 left-0 w-full h-16 bg-gradient-to-b from-black/80 to-transparent z-10 pointer-events-none" />
@@ -175,20 +177,6 @@ export default function Player() {
           {playlist[currentVideoIndex]?.title || 'Loading...'}
         </div>
       </div>
-
-      {isMuted && (
-        <button 
-          onClick={toggleMute}
-          className="absolute inset-0 flex items-center justify-center bg-black/40 group-hover:bg-black/60 transition-colors z-[40]"
-        >
-          <div className="bg-white/10 backdrop-blur-xl border border-white/20 px-6 py-3 rounded-2xl flex items-center gap-3 animate-bounce shadow-2xl">
-            <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
-              <div className="w-4 h-4 bg-white rounded-full animate-ping" />
-            </div>
-            <span className="text-white font-bold text-sm uppercase tracking-widest">Click to Unmute</span>
-          </div>
-        </button>
-      )}
     </div>
   );
 }
