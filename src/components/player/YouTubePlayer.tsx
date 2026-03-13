@@ -127,7 +127,6 @@ export default function Player() {
         rel: 0,
         iv_load_policy: 3,
         disablekb: 1,
-        mute: 1, // Start muted to guarantee autoplay
       },
     });
 
