@@ -10,10 +10,12 @@ declare global {
   }
 }
 
+type PlayerStatus = 'LOADING_PLAYLIST' | 'LOADING_API' | 'INITIALIZING_PLAYER' | 'SYNCING' | 'PLAYING' | 'ERROR';
+
 export default function Player() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [playlist, setPlaylist] = useState<VideoItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [status, setStatus] = useState<PlayerStatus>('LOADING_PLAYLIST');
   const playerRef = useRef<any>(null);
   const [isActuallyPlaying, setIsActuallyPlaying] = useState(false);
   
@@ -22,8 +24,9 @@ export default function Player() {
   const lastSyncTimeRef = useRef(0);
   const blockedVideosRef = useRef<Set<string>>(new Set());
   const syncLockRef = useRef(false);
+  const hasEverStartedRef = useRef(false);
 
-  // Load playlist
+  // Load playlist once
   useEffect(() => {
     const fetchPlaylist = async () => {
       try {
@@ -34,11 +37,11 @@ export default function Player() {
         } else {
           setPlaylist(mockPlaylist);
         }
+        setStatus(prev => prev === 'LOADING_PLAYLIST' ? 'LOADING_API' : prev);
       } catch (err) {
         console.error('Playlist error:', err);
         setPlaylist(mockPlaylist);
-      } finally {
-        setIsLoading(false);
+        setStatus(prev => prev === 'LOADING_PLAYLIST' ? 'LOADING_API' : prev);
       }
     };
     fetchPlaylist();
@@ -53,7 +56,6 @@ export default function Player() {
     let elapsed = (now - epoch) % totalDuration;
     
     // Recovery: Add skipOffset to elapsed to bypass restricted content
-    // Each skipOffset represents skipping a roughly 5-minute segment
     elapsed = (elapsed + (skipOffsetRef.current * 300)) % totalDuration;
     
     let cumulative = 0;
@@ -61,13 +63,10 @@ export default function Player() {
       const itemDuration = items[i].duration || 300;
       if (elapsed < cumulative + itemDuration) {
         const videoId = items[i].youtube_id;
-        
-        // If this specific video is known to be blocked, recursively find the next
         if (blockedVideosRef.current.has(videoId)) {
           skipOffsetRef.current += 1;
           return getSyncInfo(items);
         }
-
         return { 
           videoId, 
           startSeconds: Math.floor(elapsed - cumulative)
@@ -89,7 +88,9 @@ export default function Player() {
       const loadedVideoId = videoData?.video_id;
 
       if (loadedVideoId !== videoId || forceLoad) {
-        setIsActuallyPlaying(false);
+        // Only show full loading if we haven't started yet or it's a hard force
+        if (!hasEverStartedRef.current) setStatus('SYNCING');
+        
         playerRef.current.loadVideoById(videoId, startSeconds);
         playerRef.current.playVideo();
         playerRef.current.unMute();
@@ -107,13 +108,14 @@ export default function Player() {
     }
   };
 
-  // YouTube API Script Loading
+  // YouTube API Script Loading (One-time)
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const initPlayer = () => {
+    const createPlayer = () => {
       if (!containerRef.current || playerRef.current) return;
       
+      setStatus('INITIALIZING_PLAYER');
       const player = new window.YT.Player(containerRef.current, {
         playerVars: {
           autoplay: 1,
@@ -123,16 +125,21 @@ export default function Player() {
           iv_load_policy: 3,
           disablekb: 1,
           enablejsapi: 1,
-          origin: window.location.origin
+          origin: window.location.origin,
+          widget_referrer: window.location.origin
         },
         events: {
           onReady: (event: any) => {
             playerRef.current = event.target;
+            // Immediate sync attempt if playlist is ready
             if (playlist.length > 0) synchronize(true);
+            else setStatus('SYNCING'); // Wait for playlist
           },
           onStateChange: (event: any) => {
-            if (event.data === 1) {
+            if (event.data === 1) { // Playing
+              setStatus('PLAYING');
               setIsActuallyPlaying(true);
+              hasEverStartedRef.current = true;
               lastSyncTimeRef.current = Date.now();
             }
             if (event.data === 0) synchronize(true); // Ended
@@ -140,35 +147,38 @@ export default function Player() {
           onError: (event: any) => {
             const data = playerRef.current?.getVideoData?.();
             if (data?.video_id) {
-              console.warn(`Video ${data.video_id} is restricted. Blacklisting...`);
               blockedVideosRef.current.add(data.video_id);
             }
             skipOffsetRef.current += 1;
-            setTimeout(() => synchronize(true), 500);
+            setTimeout(() => synchronize(true), 1000);
           }
         }
       });
     };
 
     if (window.YT && window.YT.Player) {
-      initPlayer();
+      createPlayer();
     } else {
       const tag = document.createElement('script');
       tag.src = "https://www.youtube.com/iframe_api";
       const firstScriptTag = document.getElementsByTagName('script')[0];
       firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
-      window.onYouTubeIframeAPIReady = initPlayer;
+      window.onYouTubeIframeAPIReady = createPlayer;
     }
 
     return () => {
-      if (playerRef.current) {
-        playerRef.current.destroy();
-        playerRef.current = null;
-      }
+      // Don't destroy on every re-render, only on full unmount
     };
+  }, []);
+
+  // Sync when playlist arrives
+  useEffect(() => {
+    if (playlist.length > 0 && playerRef.current) {
+        synchronize(true);
+    }
   }, [playlist]);
 
-  // Watchdog: Detect "Video unavailable" overlays that don't trigger onError
+  // Watchdog: Detect stuck player
   useEffect(() => {
     const watchdog = setInterval(() => {
       if (!playerRef.current?.getPlayerState) return;
@@ -176,28 +186,27 @@ export default function Player() {
       const state = playerRef.current.getPlayerState();
       const timeSinceSync = Date.now() - lastSyncTimeRef.current;
 
-      // Increased timeout to 10s to allow for slow connections
-      if (!isActuallyPlaying && state !== 1 && state !== 3 && timeSinceSync > 10000) {
-        console.warn('Watchdog detected stuck player. Attempting skip...');
+      // Skip stuck or restricted videos (12s threshold)
+      if (status !== 'PLAYING' && state !== 3 && timeSinceSync > 12000) {
+        console.warn('Watchdog skip triggered');
         const data = playerRef.current?.getVideoData?.();
-        if (data?.video_id) {
-            blockedVideosRef.current.add(data.video_id);
-        }
+        if (data?.video_id) blockedVideosRef.current.add(data.video_id);
         skipOffsetRef.current += 1;
         synchronize(true);
       }
-    }, 4000);
+    }, 5000);
 
     return () => clearInterval(watchdog);
-  }, [playlist, isActuallyPlaying]);
+  }, [playlist, status]);
 
-  // Global interaction unmuter
   const handleInteraction = () => {
     if (playerRef.current) {
       playerRef.current.unMute();
       playerRef.current.playVideo();
-      // Force state update if it was actually playing but state was stale
-      if (playerRef.current.getPlayerState() === 1) setIsActuallyPlaying(true);
+      if (playerRef.current.getPlayerState() === 1) {
+        setStatus('PLAYING');
+        setIsActuallyPlaying(true);
+      }
     }
   };
 
@@ -206,6 +215,16 @@ export default function Player() {
     return () => window.removeEventListener('mousedown', handleInteraction);
   }, []);
 
+  const getLoadingMessage = () => {
+    switch (status) {
+      case 'LOADING_PLAYLIST': return 'Syncing Broadcast Queue...';
+      case 'LOADING_API': return 'Connecting to Signal Layer...';
+      case 'INITIALIZING_PLAYER': return 'Calibrating Visuals...';
+      case 'SYNCING': return 'Stabilizing Stream...';
+      default: return 'Establishing Connection...';
+    }
+  };
+
   return (
     <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex items-center justify-center">
       <div className="relative w-full h-full overflow-hidden flex items-center justify-center scale-[1.1]">
@@ -213,7 +232,7 @@ export default function Player() {
       </div>
 
       <div className="absolute inset-0 z-20 pointer-events-auto cursor-none bg-transparent" onClick={handleInteraction} />
-      <div className="absolute inset-0 pointer-events-none z-30 ring-[5vw] ring-black/10" />
+      <div className="absolute inset-0 pointer-events-none z-30 ring-[5vw] ring-black/10 transition-opacity duration-1000" />
 
       {/* Broadcasting Badge */}
       <div className="absolute top-8 left-8 z-40">
@@ -223,15 +242,19 @@ export default function Player() {
         </div>
       </div>
 
-      {(!isActuallyPlaying || isLoading) && (
+      {status !== 'PLAYING' && (
         <div 
-          className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black transition-opacity duration-1000"
+          className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black transition-all duration-700"
           onClick={handleInteraction}
         >
           <div className="w-12 h-12 border-2 border-white/10 border-t-white rounded-full animate-spin mb-6" />
           <div className="flex flex-col items-center gap-2">
-            <span className="text-white/40 text-[10px] font-black uppercase tracking-[0.4em] animate-pulse">Establishing Connection</span>
-            <span className="text-white/10 text-[8px] font-bold uppercase tracking-widest mt-4">Tap anywhere to initialize broadcast</span>
+            <span className="text-white/60 text-[10px] font-black uppercase tracking-[0.4em] animate-pulse">
+                {getLoadingMessage()}
+            </span>
+            <span className="text-white/20 text-[8px] font-bold uppercase tracking-widest mt-4">
+                Tap to jump start broadcast
+            </span>
           </div>
         </div>
       )}
