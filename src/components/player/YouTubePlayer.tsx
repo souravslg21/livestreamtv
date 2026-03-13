@@ -31,16 +31,34 @@ export default function Player() {
     return { index: 0, startSeconds: 0 };
   };
 
-  useEffect(() => {
-    // If supabase is available, we could fetch real data here
-    if (supabase) {
-      // Future implementation: fetch from supabase
+  // Synchronize player with the "universal" wall-clock time
+  const synchronize = async (forceSeek = false) => {
+    if (!playerRef.current || playlist.length === 0) return;
+
+    const { index, startSeconds } = getSyncInfo(playlist);
+    const video = playlist[index];
+
+    try {
+      // Check what's currently playing to avoid unnecessary resets
+      // Note: We use the index to track our intended state
+      if (index !== currentVideoIndex || forceSeek) {
+        setCurrentVideoIndex(index);
+        await playerRef.current.loadVideoById(video.youtube_id, startSeconds);
+        await playerRef.current.playVideo();
+        if (isMuted) await playerRef.current.mute();
+      } else {
+        // Just check for drift if we are already on the right video
+        const currentTime = await playerRef.current.getCurrentTime();
+        if (Math.abs(currentTime - startSeconds) > 5) {
+          await playerRef.current.seekTo(startSeconds, true);
+        }
+      }
+    } catch (error) {
+      console.error('Sync failed:', error);
     }
+  };
 
-    const { index } = getSyncInfo(playlist);
-    setCurrentVideoIndex(index);
-  }, []);
-
+  // Initial setup and playlist changes
   useEffect(() => {
     if (!containerRef.current || playerRef.current) return;
 
@@ -62,6 +80,11 @@ export default function Player() {
       }
     });
 
+    // Initial sync once player is ready
+    playerRef.current.ready().then(() => {
+      synchronize(true);
+    });
+
     return () => {
       if (playerRef.current) {
         playerRef.current.destroy();
@@ -69,34 +92,27 @@ export default function Player() {
     };
   }, []);
 
+  // Handle playlist updates or index changes
   useEffect(() => {
     if (playerRef.current && playlist.length > 0) {
-      const { index, startSeconds } = getSyncInfo(playlist);
-      const video = playlist[index];
-      
-      // Load and seek directly
-      playerRef.current.loadVideoById(video.youtube_id, startSeconds);
-      
-      playerRef.current.playVideo();
-      playerRef.current.mute();
-      
-      if (index !== currentVideoIndex) {
-        setCurrentVideoIndex(index);
-      }
+      synchronize();
     }
   }, [playlist]);
 
+  // Periodic sync to catch up if window was inactive or drift occurred
   useEffect(() => {
-    if (playerRef.current && playlist.length > 0) {
-      const video = playlist[currentVideoIndex];
-      // Simply load the video. Since we track currentVideoIndex, 
-      // we don't need to manually check the internal player state with getVideoData
-      playerRef.current.loadVideoById(video.youtube_id);
-    }
-  }, [currentVideoIndex]);
+    const interval = setInterval(() => {
+      // Only sync drift if we're not at the very end of a video to avoid flickering transitions
+      synchronize();
+    }, 10000); // Every 10 seconds
+
+    return () => clearInterval(interval);
+  }, [playlist, currentVideoIndex]);
 
   const handleVideoEnd = () => {
-    setCurrentVideoIndex((prev) => (prev + 1) % playlist.length);
+    // Instead of just incrementing, we re-sync to the wall clock
+    // This handles cases where one video might be slightly longer/shorter for different users
+    synchronize(true);
   };
 
   const toggleMute = () => {
